@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Outfit", "Noto Sans JP", system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", "Noto Sans JP", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: #0b1120;
+    color: #f1f5f9;
+    font-family: var(--font-sans);
+    letter-spacing: 0.01em;
+  }
+}
+
+/* Subtle dark scrollbar for HUD panels and modals */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.4);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+/* Subtle cartographic grid backdrop for title / summary screens */
+.atlas-grid-bg {
+  background-color: #0b1120;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% 0%, rgba(16, 185, 129, 0.09), transparent 70%),
+    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+  background-size: 100% 100%, 48px 48px, 48px 48px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Leaflet dark surface & unobtrusive attribution styling */
+.leaflet-container {
+  background-color: #0b1120 !important;
+  font-family: var(--font-sans);
+}
+
+.leaflet-control-attribution {
+  background: rgba(15, 23, 42, 0.72) !important;
+  color: rgba(148, 163, 184, 0.85) !important;
+  font-size: 10px !important;
+  backdrop-filter: blur(4px);
+}
+
+.leaflet-control-attribution a {
+  color: rgba(203, 213, 225, 0.9) !important;
+}
+
+.leaflet-bar a {
+  background-color: rgba(15, 23, 42, 0.88) !important;
+  color: #e2e8f0 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+.leaflet-bar a:hover {
+  background-color: rgba(30, 41, 59, 0.95) !important;
+  color: #ffffff !important;
+}
+

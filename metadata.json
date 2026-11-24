@@ -1,0 +1,8 @@
+{
+  "name": "Köppen Guessr",
+  "description": "GeoGuessr風にGoogleストリートビューと航空写真から世界のランダムな地点のケッペン気候区分（12種）を推理する地理クイズゲーム",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
