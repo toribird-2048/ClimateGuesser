@@ -72,3 +72,14 @@ export function playMissSound(muted: boolean) {
   playTone(260, 0.16, 0, 'sawtooth', 0.045);
   playTone(196, 0.26, 0.11, 'sawtooth', 0.04);
 }
+
+export function playTickSound(muted: boolean, urgent = false) {
+  if (muted) return;
+  playTone(urgent ? 880 : 660, 0.045, 0, 'triangle', urgent ? 0.05 : 0.03);
+}
+
+export function playTimeoutSound(muted: boolean) {
+  if (muted) return;
+  playTone(320, 0.14, 0, 'sawtooth', 0.055);
+  playTone(220, 0.28, 0.12, 'sawtooth', 0.05);
+}

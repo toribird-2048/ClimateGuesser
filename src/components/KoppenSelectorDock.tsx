@@ -8,6 +8,7 @@ interface KoppenSelectorDockProps {
   onSubmitGuess: () => void;
   isExpanded: boolean;
   onToggleExpanded: () => void;
+  excludedCodes?: KoppenCode[];
 }
 
 export function KoppenSelectorDock({
@@ -16,11 +17,18 @@ export function KoppenSelectorDock({
   onSubmitGuess,
   isExpanded,
   onToggleExpanded,
+  excludedCodes = [],
 }: KoppenSelectorDockProps) {
+  const excludeSet = new Set(excludedCodes);
+  const visibleGroups = KOPPEN_GROUPS.map((group) => ({
+    ...group,
+    codes: group.codes.filter((code) => !excludeSet.has(code)),
+  })).filter((group) => group.codes.length > 0);
+  const totalCount = visibleGroups.reduce((sum, g) => sum + g.codes.length, 0);
   const selectedInfo = selectedCode ? KOPPEN_CLASSES[selectedCode] : null;
 
   return (
-    <div className="w-full sm:w-[420px] max-w-[calc(100vw-2rem)] bg-[#0F172A]/90 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl overflow-hidden text-slate-100">
+    <div className="w-[min(320px,calc(100vw-2rem))] md:w-[370px] lg:w-[420px] bg-[#0F172A]/90 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl overflow-hidden text-slate-100">
       {/* Header / Collapse Toggle */}
       <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-white/10">
         <div className="flex items-center gap-2 min-w-0">
@@ -32,7 +40,9 @@ export function KoppenSelectorDock({
               · {selectedInfo.code} {selectedInfo.nameJa}
             </span>
           ) : (
-            <span className="text-xs text-slate-400 whitespace-nowrap">· 13区分</span>
+            <span className="text-xs text-slate-400 whitespace-nowrap">
+              · {totalCount}区分{excludeSet.has('H') ? '（H除外）' : ''}
+            </span>
           )}
         </div>
         <button
@@ -51,8 +61,8 @@ export function KoppenSelectorDock({
       </div>
 
       {isExpanded && (
-        <div className="p-3.5 space-y-2.5 max-h-[55vh] overflow-y-auto">
-          {KOPPEN_GROUPS.map((group) => (
+        <div className="p-3.5 space-y-2.5 max-h-[min(50vh,calc(100vh-14.5rem))] overflow-y-auto">
+          {visibleGroups.map((group) => (
             <div key={group.group} className="space-y-1.5">
               <div className="flex items-center gap-2 text-xs text-slate-400 px-0.5">
                 <span

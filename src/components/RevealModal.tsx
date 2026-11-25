@@ -1,13 +1,21 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { ArrowRight, CheckCircle2, MapPin, MinusCircle, XCircle } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Clock, MapPin, MinusCircle, XCircle } from 'lucide-react';
 import { getGroupForCode, KOPPEN_CLASSES } from '../data/koppen.ts';
-import type { GameMode, RoundResult } from '../types/game.ts';
+import type { GameMode, QuestionFormat, RoundResult } from '../types/game.ts';
 import { Climograph } from './Climograph.tsx';
+import { Hythergraph } from './Hythergraph.tsx';
+
+const FORMAT_LABELS: Record<QuestionFormat, string> = {
+  satellite: '衛星・OSM探索',
+  blankMap: '白地図モード',
+  hythergraph: 'ハイサーグラフモード',
+};
 
 interface RevealModalProps {
   result: RoundResult;
   mode: GameMode;
+  questionFormat: QuestionFormat;
   isFinalStep: boolean;
   isPrefetchingNext: boolean;
   onContinue: () => void;
@@ -20,6 +28,7 @@ interface RevealModalProps {
 export function RevealModal({
   result,
   mode,
+  questionFormat,
   isFinalStep,
   isPrefetchingNext,
   onContinue,
@@ -29,11 +38,26 @@ export function RevealModal({
   nextPlayerName,
 }: RevealModalProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
-  const { location, guess, correctCode, matchQuality, finalScore, hintPenalty, resolvedPlace } =
-    result;
+  const [chartTab, setChartTab] = useState<'climograph' | 'hythergraph'>(() =>
+    questionFormat === 'hythergraph' ? 'hythergraph' : 'climograph'
+  );
+  const {
+    location,
+    guess,
+    correctCode,
+    matchQuality,
+    finalScore,
+    hintPenalty,
+    resolvedPlace,
+    playerName,
+    playerIndex,
+    timedOut,
+  } = result;
+
   const correctInfo = KOPPEN_CLASSES[correctCode];
-  const guessInfo = KOPPEN_CLASSES[guess];
+  const guessInfo = guess ? KOPPEN_CLASSES[guess] : null;
   const groupInfo = getGroupForCode(correctCode);
+  const isScoredMode = mode !== 'endless';
 
   const displayPlace =
     resolvedPlace?.placeName ||
@@ -81,37 +105,63 @@ export function RevealModal({
   }, [location.id, location.lat, location.lng, correctCode, groupInfo.swatchHex]);
 
   const verdictConfig =
-    matchQuality === 'exact'
+    timedOut && !guessInfo
       ? {
-          icon: CheckCircle2,
-          title: '完全一致',
-          subtitle: 'お見事！気候区分を正確に当てました。',
-          colorClass: 'text-emerald-300',
-          bgClass: 'bg-emerald-500/12',
+          icon: Clock,
+          title: '時間切れ（未回答）',
+          subtitle:
+            mode === 'endless'
+              ? '制限時間内に回答できませんでした（連続記録はリセットされます）。'
+              : '制限時間内に回答を選べませんでした。実際の気候データを確認しましょう。',
+          colorClass: 'text-rose-300',
+          bgClass: 'bg-rose-500/14',
         }
-      : matchQuality === 'group'
+      : matchQuality === 'exact'
         ? {
-            icon: MinusCircle,
-            title: mode === 'endless' ? '大区分一致' : '大区分一致（部分点）',
-            subtitle:
-              mode === 'endless'
-                ? `大区分「${groupInfo.group} ${groupInfo.nameJa}」が一致しました（連続記録はリセットされます）。`
-                : `大区分「${groupInfo.group} ${groupInfo.nameJa}」が一致し、部分点を獲得しました。`,
-            colorClass: 'text-amber-300',
-            bgClass: 'bg-amber-500/12',
+            icon: CheckCircle2,
+            title: timedOut ? '完全一致（時間切れ自動確定）' : '完全一致',
+            subtitle: 'お見事！気候区分を正確に当てました。',
+            colorClass: 'text-emerald-300',
+            bgClass: 'bg-emerald-500/12',
           }
-        : {
-            icon: XCircle,
-            title: '不正解',
-            subtitle:
-              mode === 'endless'
-                ? '連続記録はリセットされました。そのまま次のラウンドへ進めます。'
-                : '実際の気候データと雨温図で判定根拠を確認しましょう。',
-            colorClass: 'text-rose-300',
-            bgClass: 'bg-rose-500/12',
-          };
+        : matchQuality === 'group'
+          ? {
+              icon: MinusCircle,
+              title:
+                mode === 'endless'
+                  ? timedOut
+                    ? '大区分一致（自動確定）'
+                    : '大区分一致'
+                  : timedOut
+                    ? '大区分一致（部分点・自動確定）'
+                    : '大区分一致（部分点）',
+              subtitle:
+                mode === 'endless'
+                  ? `大区分「${groupInfo.group} ${groupInfo.nameJa}」が一致しました（連続記録はリセットされます）。`
+                  : `大区分「${groupInfo.group} ${groupInfo.nameJa}」が一致し、部分点を獲得しました。`,
+              colorClass: 'text-amber-300',
+              bgClass: 'bg-amber-500/12',
+            }
+          : {
+              icon: XCircle,
+              title: timedOut ? '不正解（時間切れ自動確定）' : '不正解',
+              subtitle:
+                mode === 'endless'
+                  ? '連続記録はリセットされました。そのまま次のラウンドへ進めます。'
+                  : '実際の気候データと雨温図で判定根拠を確認しましょう。',
+              colorClass: 'text-rose-300',
+              bgClass: 'bg-rose-500/12',
+            };
 
   const VerdictIcon = verdictConfig.icon;
+  const answerLabel =
+    mode === 'versus' && playerName ? `${playerName} の回答 → 正解` : 'あなたの回答 → 正解';
+
+  const continueLabel = isFinalStep
+    ? '最終結果を見る'
+    : mode === 'versus' && nextPlayerName
+      ? `${nextPlayerName} に交代して次へ`
+      : '次のラウンドへ';
 
   return (
     <div
@@ -144,16 +194,14 @@ export function RevealModal({
 
           <div className="flex items-center gap-6 shrink-0">
             <div className="text-right">
-              <div className="text-[11px] text-slate-400">
-                {mode === 'versus' && result.playerName
-                  ? `${result.playerName} の回答 → 正解`
-                  : 'あなたの回答 → 正解'}
-              </div>
+              <div className="text-[11px] text-slate-400">{answerLabel}</div>
               <div
                 className="text-base sm:text-lg font-bold tracking-tight flex items-center justify-end gap-2"
                 style={{ fontFamily: 'var(--font-display)' }}
               >
-                <span className="text-slate-300">{guessInfo.code}</span>
+                <span className={guessInfo ? 'text-slate-300' : 'text-rose-300 text-sm font-sans'}>
+                  {guessInfo ? guessInfo.code : '時間切れ'}
+                </span>
                 <span className="text-slate-500" aria-hidden="true">
                   →
                 </span>
@@ -166,7 +214,7 @@ export function RevealModal({
               </div>
             </div>
 
-            {mode !== 'endless' && (
+            {isScoredMode && (
               <div className="text-right pl-5 border-l border-white/10">
                 <div className="text-[11px] text-slate-400">獲得スコア</div>
                 <div className="text-xl font-bold font-mono tabular-nums text-emerald-300">
@@ -182,31 +230,36 @@ export function RevealModal({
           </div>
         </div>
 
-        {/* Live Versus Scoreboard Bar */}
+        {/* Versus Live Scoreboard Strip */}
         {mode === 'versus' && versusNames && versusScores && (
-          <div className="px-6 py-2.5 border-b border-white/10 bg-slate-950/60 flex flex-wrap items-center justify-between gap-4 text-xs">
+          <div className="px-6 py-2.5 bg-slate-950/70 border-b border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs sm:text-sm">
             <div className="flex items-center gap-4 font-mono tabular-nums">
               <span
-                className={
-                  result.playerIndex === 0 ? 'text-emerald-300 font-semibold' : 'text-slate-300'
-                }
+                className={`inline-flex items-center gap-1.5 ${
+                  playerIndex === 0 ? 'text-cyan-300 font-semibold' : 'text-slate-300'
+                }`}
               >
-                P1 {versusNames[0]}: {versusScores[0].toLocaleString()} pt
+                <span className="w-2 h-2 rounded-full bg-cyan-400" aria-hidden="true" />
+                <span className="font-sans">{versusNames[0]}</span>
+                <span>{versusScores[0].toLocaleString()} pt</span>
               </span>
               <span className="text-slate-600" aria-hidden="true">
                 vs
               </span>
               <span
-                className={
-                  result.playerIndex === 1 ? 'text-sky-300 font-semibold' : 'text-slate-300'
-                }
+                className={`inline-flex items-center gap-1.5 ${
+                  playerIndex === 1 ? 'text-violet-300 font-semibold' : 'text-slate-300'
+                }`}
               >
-                P2 {versusNames[1]}: {versusScores[1].toLocaleString()} pt
+                <span className="w-2 h-2 rounded-full bg-violet-400" aria-hidden="true" />
+                <span className="font-sans">{versusNames[1]}</span>
+                <span>{versusScores[1].toLocaleString()} pt</span>
               </span>
             </div>
+
             {!isFinalStep && nextPlayerName && (
-              <span className="text-slate-400">
-                次は <strong className="text-slate-100">{nextPlayerName}</strong> の番です
+              <span className="text-xs text-slate-300">
+                次の手番: <strong className="text-white">{nextPlayerName}</strong>
               </span>
             )}
           </div>
@@ -255,16 +308,59 @@ export function RevealModal({
               <div>
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <h3 className="text-sm font-semibold text-slate-100">
-                    実測データに基づく雨温図（2015–2024年平均）
+                    実測気候グラフ（2015–2024年平均）
                   </h3>
+                  <div
+                    className="inline-flex items-center gap-0.5 bg-slate-950/80 border border-white/10 rounded-lg p-0.5"
+                    role="tablist"
+                    aria-label="気候グラフ表示切替"
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={chartTab === 'climograph'}
+                      onClick={() => setChartTab('climograph')}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        chartTab === 'climograph'
+                          ? 'bg-slate-800 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      雨温図
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={chartTab === 'hythergraph'}
+                      onClick={() => setChartTab('hythergraph')}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        chartTab === 'hythergraph'
+                          ? 'bg-slate-800 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      ハイサーグラフ
+                    </button>
+                  </div>
                 </div>
                 <div className="bg-slate-950/60 border border-white/8 rounded-xl p-3.5">
-                  <Climograph
-                    monthlyTempC={location.climate.monthlyTempC}
-                    monthlyPrecipMm={location.climate.monthlyPrecipMm}
-                    annualMeanTemp={location.climate.annualMeanTemp}
-                    annualPrecip={location.climate.annualPrecip}
-                  />
+                  {chartTab === 'climograph' ? (
+                    <Climograph
+                      monthlyTempC={location.climate.monthlyTempC}
+                      monthlyPrecipMm={location.climate.monthlyPrecipMm}
+                      annualMeanTemp={location.climate.annualMeanTemp}
+                      annualPrecip={location.climate.annualPrecip}
+                    />
+                  ) : (
+                    <Hythergraph
+                      monthlyTempC={location.climate.monthlyTempC}
+                      monthlyPrecipMm={location.climate.monthlyPrecipMm}
+                      annualMeanTemp={location.climate.annualMeanTemp}
+                      annualPrecip={location.climate.annualPrecip}
+                      compact={true}
+                      showGuides={true}
+                    />
+                  )}
                 </div>
               </div>
 
@@ -292,7 +388,7 @@ export function RevealModal({
               <div className="text-xs text-slate-400">
                 {!isFinalStep && isPrefetchingNext
                   ? '次の地点をバックグラウンドで準備中...'
-                  : `Round ${result.roundNumber}`}
+                  : `Round ${result.roundNumber} · ${FORMAT_LABELS[questionFormat]}`}
               </div>
               <div className="flex items-center gap-2.5 shrink-0">
                 {mode === 'endless' && onEndEndless && (
@@ -309,13 +405,7 @@ export function RevealModal({
                   onClick={onContinue}
                   className="px-5 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-semibold transition-colors inline-flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
                 >
-                  <span>
-                    {isFinalStep
-                      ? '最終結果を見る'
-                      : mode === 'versus' && nextPlayerName
-                        ? `${nextPlayerName} に交代して次へ`
-                        : '次のラウンドへ'}
-                  </span>
+                  <span>{continueLabel}</span>
                   <ArrowRight className="w-4 h-4" aria-hidden="true" />
                   <span className="hidden sm:inline text-xs font-mono opacity-75">Enter</span>
                 </button>

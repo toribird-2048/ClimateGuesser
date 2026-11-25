@@ -2,15 +2,32 @@ import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { BookOpen, Home, RotateCcw, Trophy } from 'lucide-react';
 import { getGroupForCode, KOPPEN_CLASSES } from '../data/koppen.ts';
-import type { BestRecords, GameMode, RoundResult, VersusConfig } from '../types/game.ts';
+import type {
+  BestRecords,
+  GameMode,
+  QuestionFormat,
+  RoundResult,
+  TimeLimitOption,
+  VersusConfig,
+} from '../types/game.ts';
+import { getRecordsForFormat } from '../utils/storage.ts';
 import { Climograph } from './Climograph.tsx';
+import { Hythergraph } from './Hythergraph.tsx';
+
+const FORMAT_LABELS: Record<QuestionFormat, string> = {
+  satellite: '衛星・OSM探索',
+  blankMap: '白地図モード',
+  hythergraph: 'ハイサーグラフモード',
+};
 
 interface SummaryScreenProps {
   mode: GameMode;
+  questionFormat: QuestionFormat;
   results: RoundResult[];
   totalScore: number;
   streakCount: number;
   totalHintsUsed: number;
+  timeLimitSec: TimeLimitOption;
   isNewBest: boolean;
   records: BestRecords;
   versusConfig?: VersusConfig;
@@ -20,12 +37,20 @@ interface SummaryScreenProps {
   onOpenReference: () => void;
 }
 
+function formatTimeLimitLabel(sec: TimeLimitOption): string {
+  if (sec === 0) return '制限なし';
+  if (sec === 120) return '2分';
+  return `${sec}秒`;
+}
+
 export function SummaryScreen({
   mode,
+  questionFormat,
   results,
   totalScore,
   streakCount,
   totalHintsUsed,
+  timeLimitSec,
   isNewBest,
   records,
   versusConfig,
@@ -35,12 +60,39 @@ export function SummaryScreen({
   onOpenReference,
 }: SummaryScreenProps) {
   const [selectedIdx, setSelectedIdx] = useState<number>(0);
+  const [chartTab, setChartTab] = useState<'climograph' | 'hythergraph'>(() =>
+    questionFormat === 'hythergraph' ? 'hythergraph' : 'climograph'
+  );
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.Marker[]>([]);
 
+  const formatRecords = getRecordsForFormat(records, questionFormat);
   const activeResult = results[selectedIdx] ?? results[0];
   const exactMatches = results.filter((r) => r.matchQuality === 'exact').length;
+
+  const isVersus = mode === 'versus' && versusConfig && versusScores;
+  const versusWinnerIdx = isVersus
+    ? versusScores[0] > versusScores[1]
+      ? 0
+      : versusScores[1] > versusScores[0]
+        ? 1
+        : null
+    : null;
+
+  const versusStats = isVersus
+    ? ([0, 1] as const).map((pIdx) => {
+        const pResults = results.filter((r) => r.playerIndex === pIdx);
+        return {
+          name: versusConfig.playerNames[pIdx],
+          score: versusScores[pIdx],
+          exact: pResults.filter((r) => r.matchQuality === 'exact').length,
+          group: pResults.filter((r) => r.matchQuality === 'group').length,
+          hints: pResults.reduce((acc, r) => acc + r.hintTierUsed, 0),
+          total: pResults.length,
+        };
+      })
+    : null;
 
   // Mount interactive OpenStreetMap world overview map
   useEffect(() => {
@@ -150,16 +202,22 @@ export function SummaryScreen({
 
       <main className="w-full max-w-[1200px] mx-auto px-6 py-8 space-y-6 flex-1">
         {/* Headline Result Strip */}
-        <section className="bg-[#0F172A]/85 border border-white/10 rounded-2xl p-6 flex flex-col gap-6">
+        <section className="bg-[#0F172A]/85 border border-white/10 rounded-2xl p-6 space-y-5">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
             <div className="space-y-1.5">
-              <div className="text-xs text-slate-400 flex items-center gap-2">
+              <div className="text-xs text-slate-400 flex flex-wrap items-center gap-2">
                 <span>
                   {mode === 'standard5'
                     ? '5ラウンド制 最終結果'
                     : mode === 'versus'
                       ? '2人交代対戦 最終結果'
                       : 'エンドレスモード 結果'}
+                </span>
+                <span aria-hidden="true">·</span>
+                <span className="text-slate-200 font-medium">{FORMAT_LABELS[questionFormat]}</span>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono tabular-nums">
+                  制限時間 {formatTimeLimitLabel(timeLimitSec)}
                 </span>
                 {isNewBest && mode !== 'versus' && (
                   <>
@@ -172,7 +230,28 @@ export function SummaryScreen({
                 )}
               </div>
 
-              {mode === 'standard5' ? (
+              {isVersus && versusConfig ? (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <Trophy
+                    className={`w-8 h-8 shrink-0 ${
+                      versusWinnerIdx === 0
+                        ? 'text-cyan-300'
+                        : versusWinnerIdx === 1
+                          ? 'text-violet-300'
+                          : 'text-amber-300'
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <h1
+                    className="text-3xl sm:text-4xl font-extrabold text-white"
+                    style={{ fontFamily: 'var(--font-display)' }}
+                  >
+                    {versusWinnerIdx === null
+                      ? '引き分け！'
+                      : `${versusConfig.playerNames[versusWinnerIdx]} の勝利！`}
+                  </h1>
+                </div>
+              ) : mode === 'standard5' ? (
                 <div className="flex items-baseline gap-3">
                   <h1
                     className="text-4xl sm:text-5xl font-extrabold font-mono tabular-nums text-white"
@@ -181,25 +260,6 @@ export function SummaryScreen({
                     {totalScore.toLocaleString()}
                   </h1>
                   <span className="text-lg text-slate-400 font-mono tabular-nums">/ 5,000 pt</span>
-                </div>
-              ) : mode === 'versus' && versusConfig && versusScores ? (
-                <div className="flex items-center gap-3 flex-wrap">
-                  <Trophy className="w-8 h-8 text-amber-300 shrink-0" aria-hidden="true" />
-                  <h1
-                    className="text-3xl sm:text-4xl font-extrabold text-white"
-                    style={{ fontFamily: 'var(--font-display)' }}
-                  >
-                    {versusScores[0] === versusScores[1]
-                      ? '引き分け！'
-                      : versusScores[0] > versusScores[1]
-                        ? `${versusConfig.playerNames[0]} の勝利！`
-                        : `${versusConfig.playerNames[1]} の勝利！`}
-                  </h1>
-                  {versusScores[0] !== versusScores[1] && (
-                    <span className="text-sm font-mono tabular-nums text-slate-400">
-                      （点差 +{Math.abs(versusScores[0] - versusScores[1]).toLocaleString()} pt）
-                    </span>
-                  )}
                 </div>
               ) : (
                 <div className="flex items-baseline gap-3 flex-wrap">
@@ -231,10 +291,10 @@ export function SummaryScreen({
                   <span>ヒント使用 {totalHintsUsed}回</span>
                   <span aria-hidden="true">·</span>
                   <span>
-                    自己ベスト:{' '}
+                    自己ベスト（{FORMAT_LABELS[questionFormat]}）:{' '}
                     {mode === 'standard5'
-                      ? `${records.standard5BestScore.toLocaleString()} pt`
-                      : `${records.endlessBestStreak} 連続`}
+                      ? `${formatRecords.standard5BestScore.toLocaleString()} pt`
+                      : `${formatRecords.endlessBestStreak} 連続`}
                   </span>
                 </div>
               )}
@@ -254,62 +314,57 @@ export function SummaryScreen({
                 className="px-5 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-semibold transition-colors inline-flex items-center gap-2 whitespace-nowrap cursor-pointer"
               >
                 <RotateCcw className="w-4 h-4" aria-hidden="true" />
-                <span>{mode === 'versus' ? 'もう一度対戦' : 'もう一度プレイ'}</span>
+                <span>もう一度プレイ</span>
               </button>
             </div>
           </div>
 
-          {/* Side-by-Side Versus Score Cards */}
-          {mode === 'versus' && versusConfig && versusScores && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-white/10">
-              {([0, 1] as const).map((idx) => {
-                const pResults = results.filter((r) => r.playerIndex === idx);
-                const pExact = pResults.filter((r) => r.matchQuality === 'exact').length;
-                const pGroup = pResults.filter((r) => r.matchQuality === 'group').length;
-                const pHints = pResults.reduce((sum, r) => sum + r.hintTierUsed, 0);
-                const maxPts = versusConfig.roundsPerPlayer * 1000;
-                const isWinner =
-                  versusScores[idx] > versusScores[idx === 0 ? 1 : 0];
+          {/* Side-by-Side Versus Player Breakdown Cards */}
+          {versusStats && versusConfig && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-white/10">
+              {versusStats.map((stat, idx) => {
+                const isWinner = versusWinnerIdx === idx;
+                const dotColor = idx === 0 ? 'bg-cyan-400' : 'bg-violet-400';
+                const borderAccent = isWinner
+                  ? idx === 0
+                    ? 'border-cyan-400/50 bg-cyan-500/8'
+                    : 'border-violet-400/50 bg-violet-500/8'
+                  : 'border-white/10 bg-slate-950/50';
+                const maxPossible = versusConfig.roundsPerPlayer * 1000;
+
                 return (
-                  <div
-                    key={idx}
-                    className={`rounded-xl p-4 border ${
-                      isWinner
-                        ? idx === 0
-                          ? 'bg-emerald-500/10 border-emerald-400/40'
-                          : 'bg-sky-500/10 border-sky-400/40'
-                        : 'bg-slate-950/50 border-white/10'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-1.5">
-                      <span
-                        className={`text-sm font-semibold ${
-                          idx === 0 ? 'text-emerald-300' : 'text-sky-300'
-                        }`}
-                      >
-                        P{idx + 1} · {versusConfig.playerNames[idx]}
-                      </span>
+                  <div key={idx} className={`rounded-xl border p-4 space-y-2 ${borderAccent}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2.5 h-2.5 rounded-full ${dotColor}`} aria-hidden="true" />
+                        <span className="text-sm font-bold text-white">{stat.name}</span>
+                      </div>
                       {isWinner && (
-                        <span className="text-xs font-semibold text-amber-300">WIN</span>
+                        <span className="text-xs font-semibold text-amber-300 inline-flex items-center gap-1">
+                          <Trophy className="w-3.5 h-3.5" aria-hidden="true" />
+                          WIN
+                        </span>
                       )}
                     </div>
+
                     <div className="flex items-baseline gap-2">
                       <span
                         className="text-3xl font-extrabold font-mono tabular-nums text-white"
                         style={{ fontFamily: 'var(--font-display)' }}
                       >
-                        {versusScores[idx].toLocaleString()}
+                        {stat.score.toLocaleString()}
                       </span>
                       <span className="text-xs font-mono tabular-nums text-slate-400">
-                        / {maxPts.toLocaleString()} pt
+                        / {maxPossible.toLocaleString()} pt
                       </span>
                     </div>
-                    <div className="text-xs font-mono tabular-nums text-slate-400 mt-2 flex flex-wrap gap-x-3 gap-y-1">
-                      <span>完全一致 {pExact}/{pResults.length}</span>
-                      <span>·</span>
-                      <span>大区分一致 {pGroup}</span>
-                      <span>·</span>
-                      <span>ヒント計 Lv.{pHints}</span>
+
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono tabular-nums text-slate-300">
+                      <span>完全一致 {stat.exact}/{stat.total}</span>
+                      <span className="text-slate-600" aria-hidden="true">·</span>
+                      <span>大区分一致 {stat.group}</span>
+                      <span className="text-slate-600" aria-hidden="true">·</span>
+                      <span>ヒント {stat.hints}回</span>
                     </div>
                   </div>
                 );
@@ -336,24 +391,70 @@ export function SummaryScreen({
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="text-xs font-mono text-slate-400">
                     Round {activeResult.roundNumber}
+                    {activeResult.playerName ? ` · ${activeResult.playerName}` : ''}
                   </span>
                   <span className="text-xs font-mono tabular-nums text-emerald-300 font-semibold">
                     {activeResult.correctCode} · {KOPPEN_CLASSES[activeResult.correctCode].nameJa}
                   </span>
                 </div>
-                <div className="text-sm font-semibold text-white">
-                  {activeResult.resolvedPlace?.placeName ||
-                    activeResult.resolvedPlace?.formattedAddress ||
-                    `座標 (${activeResult.location.lat.toFixed(2)}°, ${activeResult.location.lng.toFixed(2)}°)`}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-white truncate">
+                    {activeResult.resolvedPlace?.placeName ||
+                      activeResult.resolvedPlace?.formattedAddress ||
+                      `座標 (${activeResult.location.lat.toFixed(2)}°, ${activeResult.location.lng.toFixed(2)}°)`}
+                  </div>
+                  <div
+                    className="inline-flex items-center gap-0.5 bg-slate-950/80 border border-white/10 rounded-lg p-0.5 shrink-0"
+                    role="tablist"
+                    aria-label="気候グラフ表示切替"
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={chartTab === 'climograph'}
+                      onClick={() => setChartTab('climograph')}
+                      className={`px-2 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        chartTab === 'climograph'
+                          ? 'bg-slate-800 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      雨温図
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={chartTab === 'hythergraph'}
+                      onClick={() => setChartTab('hythergraph')}
+                      className={`px-2 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        chartTab === 'hythergraph'
+                          ? 'bg-slate-800 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      ハイサーグラフ
+                    </button>
+                  </div>
                 </div>
                 <div className="bg-slate-950/60 border border-white/8 rounded-xl p-3">
-                  <Climograph
-                    monthlyTempC={activeResult.location.climate.monthlyTempC}
-                    monthlyPrecipMm={activeResult.location.climate.monthlyPrecipMm}
-                    annualMeanTemp={activeResult.location.climate.annualMeanTemp}
-                    annualPrecip={activeResult.location.climate.annualPrecip}
-                    compact={true}
-                  />
+                  {chartTab === 'climograph' ? (
+                    <Climograph
+                      monthlyTempC={activeResult.location.climate.monthlyTempC}
+                      monthlyPrecipMm={activeResult.location.climate.monthlyPrecipMm}
+                      annualMeanTemp={activeResult.location.climate.annualMeanTemp}
+                      annualPrecip={activeResult.location.climate.annualPrecip}
+                      compact={true}
+                    />
+                  ) : (
+                    <Hythergraph
+                      monthlyTempC={activeResult.location.climate.monthlyTempC}
+                      monthlyPrecipMm={activeResult.location.climate.monthlyPrecipMm}
+                      annualMeanTemp={activeResult.location.climate.annualMeanTemp}
+                      annualPrecip={activeResult.location.climate.annualPrecip}
+                      compact={true}
+                      showGuides={true}
+                    />
+                  )}
                 </div>
                 <ul className="space-y-1 text-xs text-slate-300 leading-relaxed">
                   {activeResult.location.climate.reasonSteps.map((step, i) => (
@@ -391,11 +492,13 @@ export function SummaryScreen({
                     r.resolvedPlace?.formattedAddress ||
                     `${r.location.lat.toFixed(2)}°, ${r.location.lng.toFixed(2)}°`;
                   const statusText =
-                    r.matchQuality === 'exact'
-                      ? '完全一致'
-                      : r.matchQuality === 'group'
-                        ? '大区分一致'
-                        : '不正解';
+                    r.timedOut && !r.guess
+                      ? '時間切れ'
+                      : r.matchQuality === 'exact'
+                        ? '完全一致'
+                        : r.matchQuality === 'group'
+                          ? '大区分一致'
+                          : '不正解';
                   const statusColor =
                     r.matchQuality === 'exact'
                       ? 'text-emerald-300'
@@ -415,18 +518,28 @@ export function SummaryScreen({
                         {r.roundNumber}
                       </td>
                       {mode === 'versus' && (
-                        <td
-                          className={`py-3 px-4 font-semibold whitespace-nowrap ${
-                            r.playerIndex === 0 ? 'text-emerald-300' : 'text-sky-300'
-                          }`}
-                        >
-                          {r.playerName}
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1.5 text-slate-200 font-medium">
+                            <span
+                              className={`w-2 h-2 rounded-full ${
+                                r.playerIndex === 0 ? 'bg-cyan-400' : 'bg-violet-400'
+                              }`}
+                              aria-hidden="true"
+                            />
+                            {r.playerName}
+                          </span>
                         </td>
                       )}
                       <td className="py-3 px-4 text-slate-100 font-medium max-w-[240px] truncate">
                         {label}
                       </td>
-                      <td className="py-3 px-4 font-mono text-slate-300">{r.guess}</td>
+                      <td className="py-3 px-4 font-mono text-slate-300">
+                        {r.guess ? (
+                          r.guess
+                        ) : (
+                          <span className="text-rose-300 font-sans text-xs">未回答</span>
+                        )}
+                      </td>
                       <td className="py-3 px-4">
                         <span className="font-mono font-semibold text-white">{r.correctCode}</span>{' '}
                         <span className="text-xs text-slate-400">
@@ -436,7 +549,9 @@ export function SummaryScreen({
                       <td className="py-3 px-4 font-mono tabular-nums text-slate-400">
                         {r.hintTierUsed > 0 ? `Lv.${r.hintTierUsed}` : 'なし'}
                       </td>
-                      <td className={`py-3 px-4 text-right font-mono tabular-nums font-semibold ${statusColor}`}>
+                      <td
+                        className={`py-3 px-4 text-right font-mono tabular-nums font-semibold ${statusColor}`}
+                      >
                         {mode !== 'endless'
                           ? `${statusText} · +${r.finalScore} pt`
                           : statusText}

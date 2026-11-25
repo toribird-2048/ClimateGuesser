@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Clock,
+  Crosshair,
   Flame,
+  Globe2,
   Home,
   Loader2,
   Map as MapIcon,
   RotateCcw,
   Satellite,
-  Users,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -19,8 +21,10 @@ import type {
   HintTier,
   KoppenCode,
   MatchQuality,
+  QuestionFormat,
   RoundLocation,
   RoundResult,
+  TimeLimitOption,
   VersusConfig,
   ViewMode,
 } from './types/game.ts';
@@ -30,10 +34,22 @@ import {
   playGroupMatchSound,
   playHintSound,
   playMissSound,
+  playTickSound,
+  playTimeoutSound,
 } from './utils/sound.ts';
-import { loadBestRecords, saveBestRecords } from './utils/storage.ts';
+import {
+  clearGameSession,
+  loadBestRecords,
+  loadGamePreferences,
+  loadGameSession,
+  saveBestRecords,
+  saveGamePreferences,
+  saveGameSession,
+} from './utils/storage.ts';
+import { BlankMapViewport } from './components/BlankMapViewport.tsx';
 import { ExplorationViewport } from './components/ExplorationViewport.tsx';
 import { HintDrawer, STANDARD_HINT_PENALTIES } from './components/HintDrawer.tsx';
+import { HythergraphViewport } from './components/HythergraphViewport.tsx';
 import { KoppenReferenceModal } from './components/KoppenReferenceModal.tsx';
 import { KoppenSelectorDock } from './components/KoppenSelectorDock.tsx';
 import { RevealModal } from './components/RevealModal.tsx';
@@ -42,58 +58,111 @@ import { TitleScreen } from './components/TitleScreen.tsx';
 
 const STANDARD_ROUNDS = 5;
 
-const DEFAULT_VERSUS_CONFIG: VersusConfig = {
-  playerNames: ['プレイヤー1', 'プレイヤー2'],
-  roundsPerPlayer: 5,
-};
+function formatCountdown(seconds: number): string {
+  const clamped = Math.max(0, Math.floor(seconds));
+  const mins = Math.floor(clamped / 60);
+  const secs = clamped % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
 
 export default function App() {
+  const initialBootRef = useRef<{
+    prefs: ReturnType<typeof loadGamePreferences>;
+    session: ReturnType<typeof loadGameSession>;
+  } | null>(null);
+  if (!initialBootRef.current) {
+    initialBootRef.current = {
+      prefs: loadGamePreferences(),
+      session: loadGameSession(),
+    };
+  }
+  const bootPrefs = initialBootRef.current.prefs;
+  const bootSession = initialBootRef.current.session;
+
   const prefetchPromiseRef = useRef<Promise<RoundLocation | null> | null>(null);
   const prefetchedRoundRef = useRef<RoundLocation | null>(null);
-  const usedCoordKeysRef = useRef<Set<string>>(new Set());
-  const usedCodesRef = useRef<KoppenCode[]>([]);
+  const usedCoordKeysRef = useRef<Set<string>>(new Set(bootSession?.usedCoordKeys ?? []));
+  const usedCodesRef = useRef<KoppenCode[]>(bootSession?.usedCodes ?? []);
+  const timeoutHandledRoundRef = useRef<string | null>(null);
+  const hasResumedSessionRef = useRef(false);
 
   const [records, setRecords] = useState<BestRecords>(() => loadBestRecords());
-  const [phase, setPhase] = useState<GamePhase>('TITLE');
-  const [mode, setMode] = useState<GameMode>('standard5');
-  const [versusConfig, setVersusConfig] = useState<VersusConfig>(DEFAULT_VERSUS_CONFIG);
-  const [versusScores, setVersusScores] = useState<[number, number]>([0, 0]);
-  const [viewMode, setViewMode] = useState<ViewMode>('satellite');
-  const [muted, setMuted] = useState(false);
+  const [phase, setPhase] = useState<GamePhase>(bootSession?.phase ?? 'TITLE');
+  const [mode, setMode] = useState<GameMode>(bootSession?.mode ?? 'standard5');
+  const [questionFormat, setQuestionFormat] = useState<QuestionFormat>(
+    bootSession?.questionFormat ?? bootPrefs.questionFormat
+  );
+  const [viewMode, setViewMode] = useState<ViewMode>(bootSession?.viewMode ?? 'satellite');
+  const [muted, setMuted] = useState<boolean>(bootPrefs.muted);
 
-  const [currentRoundNumber, setCurrentRoundNumber] = useState(1);
-  const [currentLocation, setCurrentLocation] = useState<RoundLocation | null>(null);
-  const [selectedGuess, setSelectedGuess] = useState<KoppenCode | null>(null);
-  const [unlockedHintTier, setUnlockedHintTier] = useState<HintTier>(0);
-  const [totalHintsUsed, setTotalHintsUsed] = useState(0);
+  const [timeLimitSec, setTimeLimitSec] = useState<TimeLimitOption>(
+    bootSession?.timeLimitSec ?? bootPrefs.timeLimitSec
+  );
+  const [timeLeftSec, setTimeLeftSec] = useState<number>(bootSession?.timeLeftSec ?? 0);
 
-  const [isHintOpen, setIsHintOpen] = useState(false);
-  const [isSelectorExpanded, setIsSelectorExpanded] = useState(true);
+  const [versusConfig, setVersusConfig] = useState<VersusConfig>(
+    bootSession?.versusConfig ?? bootPrefs.versusConfig
+  );
+  const [versusScores, setVersusScores] = useState<[number, number]>(
+    bootSession?.versusScores ?? [0, 0]
+  );
+
+  const [currentRoundNumber, setCurrentRoundNumber] = useState<number>(
+    bootSession?.currentRoundNumber ?? 1
+  );
+  const [currentLocation, setCurrentLocation] = useState<RoundLocation | null>(
+    bootSession?.currentLocation ?? null
+  );
+  const [selectedGuess, setSelectedGuess] = useState<KoppenCode | null>(
+    bootSession?.selectedGuess ?? null
+  );
+  const [unlockedHintTier, setUnlockedHintTier] = useState<HintTier>(
+    bootSession?.unlockedHintTier ?? 0
+  );
+  const [totalHintsUsed, setTotalHintsUsed] = useState<number>(bootSession?.totalHintsUsed ?? 0);
+
+  const [isHintOpen, setIsHintOpen] = useState<boolean>(bootSession?.isHintOpen ?? false);
+  const [isSelectorExpanded, setIsSelectorExpanded] = useState<boolean>(
+    bootSession?.isSelectorExpanded ?? true
+  );
   const [isReferenceOpen, setIsReferenceOpen] = useState(false);
 
-  const [currentZoom, setCurrentZoom] = useState(13);
+  const [currentZoom, setCurrentZoom] = useState(
+    (bootSession?.questionFormat ?? bootPrefs.questionFormat) === 'blankMap' ? 2 : 13
+  );
   const [resetCounter, setResetCounter] = useState(0);
+  const [focusPinCounter, setFocusPinCounter] = useState(0);
 
-  const [results, setResults] = useState<RoundResult[]>([]);
-  const [activeReveal, setActiveReveal] = useState<RoundResult | null>(null);
-  const [totalScore, setTotalScore] = useState(0);
-  const [streakCount, setStreakCount] = useState(0);
-  const [bestSessionStreak, setBestSessionStreak] = useState(0);
-  const [isNewBest, setIsNewBest] = useState(false);
+  const [results, setResults] = useState<RoundResult[]>(bootSession?.results ?? []);
+  const [activeReveal, setActiveReveal] = useState<RoundResult | null>(
+    bootSession?.activeReveal ?? null
+  );
+  const [totalScore, setTotalScore] = useState<number>(bootSession?.totalScore ?? 0);
+  const [streakCount, setStreakCount] = useState<number>(bootSession?.streakCount ?? 0);
+  const [bestSessionStreak, setBestSessionStreak] = useState<number>(
+    bootSession?.bestSessionStreak ?? 0
+  );
+  const [isNewBest, setIsNewBest] = useState<boolean>(bootSession?.isNewBest ?? false);
 
   const [loadingError, setLoadingError] = useState<string | null>(null);
   const [isPrefetchingNext, setIsPrefetchingNext] = useState(false);
 
-  const activePlayerIndex: 0 | 1 = currentRoundNumber % 2 === 1 ? 0 : 1;
-  const activePlayerName = versusConfig.playerNames[activePlayerIndex];
-  const activePlayerTurnNumber = Math.ceil(currentRoundNumber / 2);
-  const versusTotalRounds = versusConfig.roundsPerPlayer * 2;
-  const nextPlayerName = versusConfig.playerNames[activePlayerIndex === 0 ? 1 : 0];
+  const excludedCodes: KoppenCode[] = questionFormat === 'hythergraph' ? ['H'] : [];
 
-  const startBackgroundPrefetch = useCallback(() => {
+  const versusTotalRounds = versusConfig.roundsPerPlayer * 2;
+  const activePlayerIndex = ((currentRoundNumber - 1) % 2) as 0 | 1;
+  const activePlayerName = versusConfig.playerNames[activePlayerIndex];
+  const activePlayerTurnNumber = Math.floor((currentRoundNumber - 1) / 2) + 1;
+  const nextPlayerIndex = (currentRoundNumber % 2) as 0 | 1;
+  const nextPlayerName = versusConfig.playerNames[nextPlayerIndex];
+
+  const startBackgroundPrefetch = useCallback((activeFormat: QuestionFormat) => {
     setIsPrefetchingNext(true);
     prefetchedRoundRef.current = null;
-    const promise = discoverRandomRound(usedCodesRef.current, usedCoordKeysRef.current)
+    const excludeCodes: KoppenCode[] = activeFormat === 'hythergraph' ? ['H'] : [];
+    const promise = discoverRandomRound(usedCodesRef.current, usedCoordKeysRef.current, {
+      excludeCodes,
+    })
       .then((loc) => {
         prefetchedRoundRef.current = loc;
         return loc;
@@ -106,8 +175,13 @@ export default function App() {
   }, []);
 
   const loadRound = useCallback(
-    async (roundNum: number, activeMode: GameMode, totalPlannedRounds?: number) => {
-      setCurrentRoundNumber(roundNum);
+    async (
+      roundNum: number,
+      activeMode: GameMode,
+      activeFormat: QuestionFormat,
+      activeTimeLimit: TimeLimitOption,
+      activeVersusTotalRounds = versusTotalRounds
+    ) => {
       setPhase('LOADING');
       setLoadingError(null);
       setSelectedGuess(null);
@@ -115,6 +189,12 @@ export default function App() {
       setIsHintOpen(false);
       setViewMode('satellite');
       setResetCounter(0);
+      setFocusPinCounter(0);
+      setCurrentRoundNumber(roundNum);
+      setTimeLeftSec(activeTimeLimit);
+      timeoutHandledRoundRef.current = null;
+
+      const excludeCodes: KoppenCode[] = activeFormat === 'hythergraph' ? ['H'] : [];
 
       try {
         let nextLoc: RoundLocation | null = prefetchedRoundRef.current;
@@ -124,26 +204,32 @@ export default function App() {
         prefetchedRoundRef.current = null;
         prefetchPromiseRef.current = null;
 
+        if (nextLoc && excludeCodes.includes(nextLoc.climate.climateCode)) {
+          nextLoc = null;
+        }
+
         if (!nextLoc) {
-          nextLoc = await discoverRandomRound(usedCodesRef.current, usedCoordKeysRef.current);
+          nextLoc = await discoverRandomRound(usedCodesRef.current, usedCoordKeysRef.current, {
+            excludeCodes,
+          });
         }
 
         usedCoordKeysRef.current.add(`${Math.round(nextLoc.lat)},${Math.round(nextLoc.lng)}`);
         usedCodesRef.current = [...usedCodesRef.current, nextLoc.climate.climateCode];
 
         setCurrentLocation(nextLoc);
-        setCurrentZoom(13);
+        setCurrentZoom(activeFormat === 'blankMap' ? 2 : 13);
+        setTimeLeftSec(activeTimeLimit);
         setPhase('PLAYING');
 
         // Prefetch the next round in the background while the player explores
         const hasMoreRounds =
           activeMode === 'endless' ||
           (activeMode === 'standard5' && roundNum < STANDARD_ROUNDS) ||
-          (activeMode === 'versus' &&
-            roundNum < (totalPlannedRounds ?? versusTotalRounds));
+          (activeMode === 'versus' && roundNum < activeVersusTotalRounds);
 
         if (hasMoreRounds) {
-          startBackgroundPrefetch();
+          startBackgroundPrefetch(activeFormat);
         }
       } catch (err) {
         const msg =
@@ -157,36 +243,178 @@ export default function App() {
   );
 
   const handleStartMode = useCallback(
-    (chosenMode: GameMode, incomingVersusConfig?: VersusConfig) => {
+    (
+      chosenMode: GameMode,
+      options: {
+        questionFormat: QuestionFormat;
+        timeLimitSec: TimeLimitOption;
+        versusConfig?: VersusConfig;
+      }
+    ) => {
       playClickSound(muted);
       usedCoordKeysRef.current = new Set();
       usedCodesRef.current = [];
       prefetchedRoundRef.current = null;
       prefetchPromiseRef.current = null;
 
-      const resolvedVersus = incomingVersusConfig ?? versusConfig;
-      if (incomingVersusConfig) {
-        setVersusConfig(incomingVersusConfig);
+      const resolvedVersus = options.versusConfig ?? versusConfig;
+      if (options.versusConfig) {
+        setVersusConfig(options.versusConfig);
       }
 
       setMode(chosenMode);
+      setQuestionFormat(options.questionFormat);
+      setTimeLimitSec(options.timeLimitSec);
+      setVersusScores([0, 0]);
       setResults([]);
       setActiveReveal(null);
       setTotalScore(0);
-      setVersusScores([0, 0]);
       setStreakCount(0);
       setBestSessionStreak(0);
       setIsNewBest(false);
       setTotalHintsUsed(0);
       setIsSelectorExpanded(true);
 
-      const plannedTotal =
-        chosenMode === 'versus' ? resolvedVersus.roundsPerPlayer * 2 : STANDARD_ROUNDS;
-
-      void loadRound(1, chosenMode, plannedTotal);
+      void loadRound(
+        1,
+        chosenMode,
+        options.questionFormat,
+        options.timeLimitSec,
+        resolvedVersus.roundsPerPlayer * 2
+      );
     },
     [loadRound, muted, versusConfig]
   );
+
+  const handlePreferencesChange = useCallback(
+    (next: {
+      questionFormat: QuestionFormat;
+      timeLimitSec: TimeLimitOption;
+      versusConfig: VersusConfig;
+    }) => {
+      setQuestionFormat(next.questionFormat);
+      setTimeLimitSec(next.timeLimitSec);
+      setVersusConfig(next.versusConfig);
+    },
+    []
+  );
+
+  // Save user preferences (format, timer, versus names/rounds, mute) to localStorage
+  useEffect(() => {
+    saveGamePreferences({
+      questionFormat,
+      timeLimitSec,
+      versusConfig,
+      muted,
+    });
+  }, [questionFormat, timeLimitSec, versusConfig, muted]);
+
+  // Save active game session to localStorage so reloading restores exact progress
+  useEffect(() => {
+    if (phase === 'TITLE') {
+      clearGameSession();
+      return;
+    }
+
+    saveGameSession({
+      version: 1,
+      savedAt: Date.now(),
+      phase,
+      mode,
+      questionFormat,
+      viewMode,
+      timeLimitSec,
+      timeLeftSec,
+      versusConfig,
+      versusScores,
+      currentRoundNumber,
+      currentLocation,
+      selectedGuess,
+      unlockedHintTier,
+      totalHintsUsed,
+      isHintOpen,
+      isSelectorExpanded,
+      results,
+      activeReveal,
+      totalScore,
+      streakCount,
+      bestSessionStreak,
+      isNewBest,
+      usedCoordKeys: Array.from(usedCoordKeysRef.current),
+      usedCodes: usedCodesRef.current,
+    });
+  }, [
+    phase,
+    mode,
+    questionFormat,
+    viewMode,
+    timeLimitSec,
+    timeLeftSec,
+    versusConfig,
+    versusScores,
+    currentRoundNumber,
+    currentLocation,
+    selectedGuess,
+    unlockedHintTier,
+    totalHintsUsed,
+    isHintOpen,
+    isSelectorExpanded,
+    results,
+    activeReveal,
+    totalScore,
+    streakCount,
+    bestSessionStreak,
+    isNewBest,
+  ]);
+
+  // Resume async tasks (round loading, reverse geocode, prefetch) when restoring a cached session
+  useEffect(() => {
+    if (hasResumedSessionRef.current) return;
+    hasResumedSessionRef.current = true;
+    const saved = initialBootRef.current?.session;
+    if (!saved) return;
+
+    const savedVersusTotal = saved.versusConfig.roundsPerPlayer * 2;
+    const hasMoreRounds =
+      saved.mode === 'endless' ||
+      (saved.mode === 'standard5' && saved.currentRoundNumber < STANDARD_ROUNDS) ||
+      (saved.mode === 'versus' && saved.currentRoundNumber < savedVersusTotal);
+
+    if (saved.phase === 'LOADING') {
+      void loadRound(
+        saved.currentRoundNumber,
+        saved.mode,
+        saved.questionFormat,
+        saved.timeLimitSec,
+        savedVersusTotal
+      );
+      return;
+    }
+
+    if (saved.phase === 'PLAYING' && hasMoreRounds) {
+      startBackgroundPrefetch(saved.questionFormat);
+      return;
+    }
+
+    if (saved.phase === 'REVEAL' && saved.activeReveal) {
+      if (!saved.activeReveal.resolvedPlace) {
+        const targetLoc = saved.activeReveal.location;
+        void fetchReverseGeocode(targetLoc.lat, targetLoc.lng).then((geo) => {
+          setActiveReveal((curr) =>
+            curr && curr.location.id === targetLoc.id ? { ...curr, resolvedPlace: geo } : curr
+          );
+          setResults((prev) =>
+            prev.map((item) =>
+              item.location.id === targetLoc.id ? { ...item, resolvedPlace: geo } : item
+            )
+          );
+        });
+      }
+      if (hasMoreRounds) {
+        startBackgroundPrefetch(saved.questionFormat);
+      }
+    }
+  }, [loadRound, startBackgroundPrefetch]);
 
   const handleUnlockNextHint = useCallback(() => {
     if (unlockedHintTier >= 3) return;
@@ -197,123 +425,195 @@ export default function App() {
     setTotalHintsUsed((prev) => prev + 1);
   }, [unlockedHintTier, muted]);
 
-  const handleSubmitGuess = useCallback(() => {
-    if (!currentLocation || !selectedGuess || phase !== 'PLAYING') return;
+  const resolveRound = useCallback(
+    (guessToLock: KoppenCode | null, timedOut: boolean) => {
+      if (!currentLocation || phase !== 'PLAYING') return;
+      if (!timedOut && !guessToLock) return;
 
-    const correctCode = currentLocation.climate.climateCode;
-    const isExact = selectedGuess === correctCode;
-    const isGroupMatch =
-      !isExact &&
-      KOPPEN_CLASSES[selectedGuess].group === KOPPEN_CLASSES[correctCode].group;
+      const correctCode = currentLocation.climate.climateCode;
+      const isExact = guessToLock !== null && guessToLock === correctCode;
+      const isGroupMatch =
+        guessToLock !== null &&
+        !isExact &&
+        KOPPEN_CLASSES[guessToLock].group === KOPPEN_CLASSES[correctCode].group;
 
-    const matchQuality: MatchQuality = isExact
-      ? 'exact'
-      : isGroupMatch
-        ? 'group'
-        : 'miss';
+      const matchQuality: MatchQuality = isExact
+        ? 'exact'
+        : isGroupMatch
+          ? 'group'
+          : 'miss';
 
-    const isScoredMode = mode !== 'endless';
-    const hintPenalty = isScoredMode ? STANDARD_HINT_PENALTIES[unlockedHintTier] : 0;
+      const isScoredMode = mode !== 'endless';
+      const hintPenalty = isScoredMode ? STANDARD_HINT_PENALTIES[unlockedHintTier] : 0;
 
-    let baseScore = 0;
-    let finalScore = 0;
-    if (isScoredMode) {
-      if (isExact) {
-        baseScore = 1000;
-        finalScore = Math.max(100, baseScore - hintPenalty);
-      } else if (isGroupMatch) {
-        baseScore = 400;
-        finalScore = Math.max(50, baseScore - Math.floor(hintPenalty * 0.5));
+      let baseScore = 0;
+      let finalScore = 0;
+      if (isScoredMode) {
+        if (isExact) {
+          baseScore = 1000;
+          finalScore = Math.max(100, baseScore - hintPenalty);
+        } else if (isGroupMatch) {
+          baseScore = 400;
+          finalScore = Math.max(50, baseScore - Math.floor(hintPenalty * 0.5));
+        }
       }
+
+      if (timedOut && !guessToLock) {
+        playTimeoutSound(muted);
+      } else if (isExact) {
+        playExactMatchSound(muted);
+      } else if (isGroupMatch && isScoredMode) {
+        playGroupMatchSound(muted);
+      } else {
+        playMissSound(muted);
+      }
+
+      const roundResult: RoundResult = {
+        roundNumber: currentRoundNumber,
+        location: currentLocation,
+        guess: guessToLock,
+        correctCode,
+        matchQuality,
+        baseScore,
+        hintPenalty,
+        finalScore,
+        hintTierUsed: unlockedHintTier,
+        resolvedPlace: null,
+        timedOut,
+        questionFormat,
+        ...(mode === 'versus'
+          ? {
+              playerIndex: activePlayerIndex,
+              playerName: activePlayerName,
+            }
+          : {}),
+      };
+
+      const nextScore = totalScore + finalScore;
+      const nextStreak = mode === 'endless' ? (isExact ? streakCount + 1 : 0) : streakCount;
+      const nextBestSessionStreak = Math.max(bestSessionStreak, nextStreak);
+
+      setTotalScore(nextScore);
+      if (mode === 'versus') {
+        setVersusScores((prev) =>
+          activePlayerIndex === 0
+            ? [prev[0] + finalScore, prev[1]]
+            : [prev[0], prev[1] + finalScore]
+        );
+      }
+      setStreakCount(nextStreak);
+      setBestSessionStreak(nextBestSessionStreak);
+      setActiveReveal(roundResult);
+      setResults((prev) => [...prev, roundResult]);
+      setPhase('REVEAL');
+
+      // Resolve place name via OpenStreetMap Nominatim proxy on reveal
+      void fetchReverseGeocode(currentLocation.lat, currentLocation.lng).then((geo) => {
+        setActiveReveal((curr) =>
+          curr && curr.location.id === currentLocation.id
+            ? { ...curr, resolvedPlace: geo }
+            : curr
+        );
+        setResults((prev) =>
+          prev.map((item) =>
+            item.location.id === currentLocation.id ? { ...item, resolvedPlace: geo } : item
+          )
+        );
+      });
+    },
+    [
+      currentLocation,
+      phase,
+      mode,
+      questionFormat,
+      unlockedHintTier,
+      muted,
+      currentRoundNumber,
+      activePlayerIndex,
+      activePlayerName,
+      totalScore,
+      streakCount,
+      bestSessionStreak,
+    ]
+  );
+
+  const handleSubmitGuess = useCallback(() => {
+    resolveRound(selectedGuess, false);
+  }, [resolveRound, selectedGuess]);
+
+  // Countdown tick loop during PLAYING when a time limit is active
+  useEffect(() => {
+    if (phase !== 'PLAYING' || timeLimitSec === 0) return;
+
+    const timer = window.setInterval(() => {
+      setTimeLeftSec((prev) => {
+        if (prev <= 1) {
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [phase, timeLimitSec, currentLocation?.id]);
+
+  // Subtle audio cue for the final 10 seconds (only fires when remaining seconds change)
+  useEffect(() => {
+    if (phase !== 'PLAYING' || timeLimitSec === 0) return;
+    if (timeLeftSec > 0 && timeLeftSec <= 10) {
+      playTickSound(muted, timeLeftSec <= 5);
     }
+  }, [phase, timeLimitSec, timeLeftSec, muted]);
 
-    if (isExact) {
-      playExactMatchSound(muted);
-    } else if (isGroupMatch && isScoredMode) {
-      playGroupMatchSound(muted);
-    } else {
-      playMissSound(muted);
+  // Automatic lock-in when the countdown reaches 0
+  useEffect(() => {
+    if (phase !== 'PLAYING' || timeLimitSec === 0 || !currentLocation) return;
+    if (timeLeftSec === 0 && timeoutHandledRoundRef.current !== currentLocation.id) {
+      timeoutHandledRoundRef.current = currentLocation.id;
+      resolveRound(selectedGuess, true);
     }
-
-    const roundResult: RoundResult = {
-      roundNumber: currentRoundNumber,
-      playerIndex: mode === 'versus' ? activePlayerIndex : undefined,
-      playerName: mode === 'versus' ? activePlayerName : undefined,
-      location: currentLocation,
-      guess: selectedGuess,
-      correctCode,
-      matchQuality,
-      baseScore,
-      hintPenalty,
-      finalScore,
-      hintTierUsed: unlockedHintTier,
-      resolvedPlace: null,
-    };
-
-    const nextScore = totalScore + finalScore;
-    const nextStreak = mode === 'endless' ? (isExact ? streakCount + 1 : 0) : streakCount;
-    const nextBestSessionStreak = Math.max(bestSessionStreak, nextStreak);
-
-    setTotalScore(nextScore);
-    if (mode === 'versus') {
-      setVersusScores((prev) =>
-        activePlayerIndex === 0
-          ? [prev[0] + finalScore, prev[1]]
-          : [prev[0], prev[1] + finalScore]
-      );
-    }
-    setStreakCount(nextStreak);
-    setBestSessionStreak(nextBestSessionStreak);
-    setActiveReveal(roundResult);
-    setResults((prev) => [...prev, roundResult]);
-    setPhase('REVEAL');
-
-    // Resolve place name via OpenStreetMap Nominatim proxy on reveal
-    void fetchReverseGeocode(currentLocation.lat, currentLocation.lng).then((geo) => {
-      setActiveReveal((curr) =>
-        curr && curr.location.id === currentLocation.id
-          ? { ...curr, resolvedPlace: geo }
-          : curr
-      );
-      setResults((prev) =>
-        prev.map((item) =>
-          item.location.id === currentLocation.id ? { ...item, resolvedPlace: geo } : item
-        )
-      );
-    });
-  }, [
-    currentLocation,
-    selectedGuess,
-    phase,
-    mode,
-    unlockedHintTier,
-    muted,
-    currentRoundNumber,
-    activePlayerIndex,
-    activePlayerName,
-    totalScore,
-    streakCount,
-    bestSessionStreak,
-  ]);
+  }, [phase, timeLimitSec, timeLeftSec, currentLocation, selectedGuess, resolveRound]);
 
   const finishGame = useCallback(
     (finalScoreValue: number, finalStreakValue: number, hintsUsedValue: number) => {
       const prev = loadBestRecords();
+      const prevFmt = prev.byFormat[questionFormat];
       let beatBest = false;
+
+      const updatedFmt = {
+        ...prevFmt,
+        gamesPlayed: prevFmt.gamesPlayed + 1,
+      };
+
       const updated: BestRecords = {
         ...prev,
         gamesPlayed: prev.gamesPlayed + 1,
+        byFormat: {
+          ...prev.byFormat,
+          [questionFormat]: updatedFmt,
+        },
       };
 
-      if (mode === 'standard5' && finalScoreValue > prev.standard5BestScore) {
-        updated.standard5BestScore = finalScoreValue;
-        beatBest = true;
+      if (mode === 'standard5') {
+        if (finalScoreValue > prevFmt.standard5BestScore) {
+          updatedFmt.standard5BestScore = finalScoreValue;
+          beatBest = true;
+        }
+        if (finalScoreValue > prev.standard5BestScore) {
+          updated.standard5BestScore = finalScoreValue;
+        }
       }
 
       if (mode === 'endless') {
+        if (finalStreakValue > prevFmt.endlessBestStreak) {
+          updatedFmt.endlessBestStreak = finalStreakValue;
+          beatBest = true;
+        }
+        if (hintsUsedValue === 0 && finalStreakValue > prevFmt.endlessBestNoHintStreak) {
+          updatedFmt.endlessBestNoHintStreak = finalStreakValue;
+        }
         if (finalStreakValue > prev.endlessBestStreak) {
           updated.endlessBestStreak = finalStreakValue;
-          beatBest = true;
         }
         if (hintsUsedValue === 0 && finalStreakValue > prev.endlessBestNoHintStreak) {
           updated.endlessBestNoHintStreak = finalStreakValue;
@@ -325,7 +625,7 @@ export default function App() {
       setIsNewBest(beatBest);
       setPhase('SUMMARY');
     },
-    [mode]
+    [mode, questionFormat]
   );
 
   // Endless mode always continues regardless of correctness; user can end anytime
@@ -347,7 +647,7 @@ export default function App() {
       return;
     }
     setActiveReveal(null);
-    void loadRound(currentRoundNumber + 1, mode, versusTotalRounds);
+    void loadRound(currentRoundNumber + 1, mode, questionFormat, timeLimitSec);
   }, [
     muted,
     isFinalRevealStep,
@@ -358,7 +658,8 @@ export default function App() {
     loadRound,
     currentRoundNumber,
     mode,
-    versusTotalRounds,
+    questionFormat,
+    timeLimitSec,
   ]);
 
   // Keyboard shortcuts during PLAYING and REVEAL
@@ -376,7 +677,7 @@ export default function App() {
       }
 
       if (phase === 'PLAYING') {
-        if (e.key === 's' || e.key === 'S') {
+        if ((e.key === 's' || e.key === 'S') && questionFormat === 'satellite') {
           e.preventDefault();
           playClickSound(muted);
           setViewMode((v) => (v === 'satellite' ? 'osm' : 'satellite'));
@@ -384,10 +685,14 @@ export default function App() {
           e.preventDefault();
           playClickSound(muted);
           setIsHintOpen((open) => !open);
-        } else if (e.code === 'Space') {
+        } else if (e.code === 'Space' && questionFormat !== 'hythergraph') {
           e.preventDefault();
           playClickSound(muted);
           setResetCounter((c) => c + 1);
+        } else if ((e.key === 'z' || e.key === 'Z') && questionFormat === 'blankMap') {
+          e.preventDefault();
+          playClickSound(muted);
+          setFocusPinCounter((c) => c + 1);
         } else if (e.key === 'Enter' && selectedGuess) {
           e.preventDefault();
           handleSubmitGuess();
@@ -402,6 +707,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     phase,
+    questionFormat,
     muted,
     selectedGuess,
     isReferenceOpen,
@@ -414,7 +720,10 @@ export default function App() {
       <>
         <TitleScreen
           records={records}
-          defaultVersusConfig={versusConfig}
+          initialQuestionFormat={questionFormat}
+          initialVersusConfig={versusConfig}
+          initialTimeLimit={timeLimitSec}
+          onPreferencesChange={handlePreferencesChange}
           onStartMode={handleStartMode}
           onOpenReference={() => setIsReferenceOpen(true)}
         />
@@ -430,15 +739,23 @@ export default function App() {
       <>
         <SummaryScreen
           mode={mode}
+          questionFormat={questionFormat}
           results={results}
           totalScore={totalScore}
           streakCount={bestSessionStreak}
           totalHintsUsed={totalHintsUsed}
+          timeLimitSec={timeLimitSec}
           isNewBest={isNewBest}
           records={records}
           versusConfig={mode === 'versus' ? versusConfig : undefined}
           versusScores={mode === 'versus' ? versusScores : undefined}
-          onPlayAgain={() => handleStartMode(mode, mode === 'versus' ? versusConfig : undefined)}
+          onPlayAgain={() =>
+            handleStartMode(mode, {
+              questionFormat,
+              timeLimitSec,
+              versusConfig: mode === 'versus' ? versusConfig : undefined,
+            })
+          }
           onGoHome={() => setPhase('TITLE')}
           onOpenReference={() => setIsReferenceOpen(true)}
         />
@@ -449,15 +766,36 @@ export default function App() {
     );
   }
 
+  const timeProgressRatio =
+    timeLimitSec > 0 ? Math.max(0, Math.min(1, timeLeftSec / timeLimitSec)) : 1;
+  const isTimeUrgent = timeLimitSec > 0 && timeLeftSec <= 10;
+  const isTimeWarning = timeLimitSec > 0 && timeLeftSec > 10 && timeLeftSec <= 20;
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#0B1120] select-none">
-      {/* Full-bleed Satellite / Label-free OpenStreetMap Exploration Viewport */}
-      {currentLocation && (
+      {/* Main Format-Specific Viewport */}
+      {currentLocation && questionFormat === 'satellite' && (
         <ExplorationViewport
           location={currentLocation}
           viewMode={viewMode}
           resetCounter={resetCounter}
           onZoomChange={setCurrentZoom}
+        />
+      )}
+
+      {currentLocation && questionFormat === 'blankMap' && (
+        <BlankMapViewport
+          location={currentLocation}
+          resetCounter={resetCounter}
+          focusPinCounter={focusPinCounter}
+          onZoomChange={setCurrentZoom}
+        />
+      )}
+
+      {currentLocation && questionFormat === 'hythergraph' && (
+        <HythergraphViewport
+          location={currentLocation}
+          unlockedHintTier={unlockedHintTier}
         />
       )}
 
@@ -483,7 +821,9 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => void loadRound(currentRoundNumber, mode, versusTotalRounds)}
+                    onClick={() =>
+                      void loadRound(currentRoundNumber, mode, questionFormat, timeLimitSec)
+                    }
                     className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-semibold cursor-pointer whitespace-nowrap"
                   >
                     別の地点を再探索
@@ -496,15 +836,19 @@ export default function App() {
                   className="w-8 h-8 text-emerald-400 animate-spin mx-auto"
                   aria-hidden="true"
                 />
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   {mode === 'versus' && (
-                    <div
-                      className={`text-sm font-semibold ${
-                        activePlayerIndex === 0 ? 'text-emerald-300' : 'text-sky-300'
-                      }`}
-                    >
-                      P{activePlayerIndex + 1} · {activePlayerName} のターン（第
-                      {activePlayerTurnNumber}問 / {versusConfig.roundsPerPlayer}）
+                    <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-200 pb-1">
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          activePlayerIndex === 0 ? 'bg-cyan-400' : 'bg-violet-400'
+                        }`}
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {activePlayerName} のターン（{activePlayerTurnNumber} /{' '}
+                        {versusConfig.roundsPerPlayer}問目）
+                      </span>
                     </div>
                   )}
                   <div
@@ -526,9 +870,9 @@ export default function App() {
       {/* Active Playing Dark HUD Overlays */}
       {phase === 'PLAYING' && currentLocation && (
         <>
-          {/* Top-Left Minimal Status HUD */}
-          <div className="fixed top-4 left-4 z-20 flex flex-col gap-2 max-w-[calc(100vw-2rem)]">
-            <div className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 rounded-xl px-4 py-2.5 flex items-center gap-3.5 shadow-xl">
+          {/* Top-Left Minimal Status HUD + Optional Countdown Timer */}
+          <div className="fixed top-4 left-4 z-20 flex flex-col items-start gap-2 max-w-[calc(100vw-2rem)]">
+            <div className="relative overflow-hidden bg-[#0F172A]/86 backdrop-blur-md border border-white/10 rounded-xl px-4 py-2.5 flex items-center gap-3 sm:gap-4 shadow-xl">
               <button
                 type="button"
                 onClick={() => setPhase('TITLE')}
@@ -542,9 +886,10 @@ export default function App() {
               <div className="h-4 w-px bg-white/10 shrink-0" aria-hidden="true" />
 
               {mode === 'standard5' ? (
-                <div className="flex items-center gap-3.5 text-xs sm:text-sm font-mono tabular-nums">
+                <div className="flex items-center gap-3 sm:gap-4 text-xs sm:text-sm font-mono tabular-nums">
                   <span className="text-slate-300 whitespace-nowrap">
-                    Round <strong className="text-white">{currentRoundNumber}</strong>/{STANDARD_ROUNDS}
+                    Round <strong className="text-white">{currentRoundNumber}</strong>/
+                    {STANDARD_ROUNDS}
                   </span>
                   <span className="text-slate-500" aria-hidden="true">
                     ·
@@ -554,21 +899,26 @@ export default function App() {
                   </span>
                 </div>
               ) : mode === 'versus' ? (
-                <div className="flex items-center gap-3 text-xs sm:text-sm min-w-0">
-                  <span
-                    className={`inline-flex items-center gap-1.5 font-semibold whitespace-nowrap ${
-                      activePlayerIndex === 0 ? 'text-emerald-300' : 'text-sky-300'
-                    }`}
-                  >
-                    <Users className="w-4 h-4 shrink-0" aria-hidden="true" />
-                    <span className="truncate max-w-[120px]">{activePlayerName}</span>
-                    <span className="text-slate-400 font-normal">の番</span>
+                <div className="flex items-center gap-2.5 sm:gap-3.5 text-xs sm:text-sm">
+                  <span className="inline-flex items-center gap-1.5 font-semibold text-white whitespace-nowrap">
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${
+                        activePlayerIndex === 0 ? 'bg-cyan-400' : 'bg-violet-400'
+                      }`}
+                      aria-hidden="true"
+                    />
+                    <span className="max-w-[110px] truncate">{activePlayerName}</span>
                   </span>
-                  <span className="text-slate-500" aria-hidden="true">
-                    ·
-                  </span>
-                  <span className="font-mono tabular-nums text-slate-300 whitespace-nowrap">
+                  <span className="font-mono tabular-nums text-slate-400 whitespace-nowrap">
                     {activePlayerTurnNumber}/{versusConfig.roundsPerPlayer}
+                  </span>
+                  <span className="hidden sm:inline text-slate-600" aria-hidden="true">
+                    |
+                  </span>
+                  <span className="hidden sm:inline-flex items-center gap-1.5 font-mono tabular-nums text-xs text-slate-300 whitespace-nowrap">
+                    <span className="text-cyan-300">{versusScores[0].toLocaleString()}</span>
+                    <span className="text-slate-500">-</span>
+                    <span className="text-violet-300">{versusScores[1].toLocaleString()}</span>
                   </span>
                 </div>
               ) : (
@@ -600,6 +950,25 @@ export default function App() {
                 </div>
               )}
 
+              {timeLimitSec > 0 && (
+                <>
+                  <div className="h-4 w-px bg-white/10 shrink-0" aria-hidden="true" />
+                  <div
+                    className={`inline-flex items-center gap-1.5 font-mono tabular-nums text-xs sm:text-sm font-bold whitespace-nowrap ${
+                      isTimeUrgent
+                        ? 'text-rose-400 animate-pulse'
+                        : isTimeWarning
+                          ? 'text-amber-300'
+                          : 'text-sky-300'
+                    }`}
+                    aria-label={`残り時間 ${formatCountdown(timeLeftSec)}`}
+                  >
+                    <Clock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>{formatCountdown(timeLeftSec)}</span>
+                  </div>
+                </>
+              )}
+
               <div className="h-4 w-px bg-white/10 shrink-0" aria-hidden="true" />
 
               <button
@@ -615,47 +984,69 @@ export default function App() {
                   <Volume2 className="w-4 h-4" aria-hidden="true" />
                 )}
               </button>
-            </div>
 
-            {/* Compact Live Score Comparison Strip for Versus Mode */}
-            {mode === 'versus' && (
-              <div className="bg-[#0F172A]/84 backdrop-blur-md border border-white/10 rounded-xl px-3.5 py-2 flex items-center gap-3 text-xs font-mono tabular-nums shadow-lg w-fit">
-                <span
-                  className={
-                    activePlayerIndex === 0 ? 'text-emerald-300 font-semibold' : 'text-slate-400'
-                  }
+              {/* Subtle bottom countdown progress bar when time limit is enabled */}
+              {timeLimitSec > 0 && (
+                <div
+                  className="absolute bottom-0 left-0 right-0 h-[2px] bg-white/10"
+                  aria-hidden="true"
                 >
-                  P1 {versusConfig.playerNames[0]}: {versusScores[0].toLocaleString()}pt
-                </span>
-                <span className="text-slate-600" aria-hidden="true">
-                  /
-                </span>
-                <span
-                  className={
-                    activePlayerIndex === 1 ? 'text-sky-300 font-semibold' : 'text-slate-400'
-                  }
-                >
-                  P2 {versusConfig.playerNames[1]}: {versusScores[1].toLocaleString()}pt
-                </span>
-              </div>
-            )}
+                  <div
+                    className={`h-full transition-[width] duration-1000 linear ${
+                      isTimeUrgent
+                        ? 'bg-rose-400'
+                        : isTimeWarning
+                          ? 'bg-amber-400'
+                          : 'bg-sky-400'
+                    }`}
+                    style={{ width: `${timeProgressRatio * 100}%` }}
+                  />
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Top-Center Compact View & Zoom Readout */}
-          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-20 hidden lg:flex items-center gap-2.5 bg-[#0F172A]/82 backdrop-blur-md border border-white/10 rounded-xl px-3.5 py-2 text-xs text-slate-200 shadow-lg pointer-events-none">
-            <span className="text-slate-200 font-medium">
-              {viewMode === 'satellite' ? '衛星写真（ラベルなし）' : 'OpenStreetMap（ラベルなし）'}
-            </span>
-            <span className="text-slate-600" aria-hidden="true">
-              ·
-            </span>
-            <span className="font-mono tabular-nums text-slate-400">
-              Zoom {currentZoom} / 17
-            </span>
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-20 hidden xl:flex items-center gap-2.5 bg-[#0F172A]/82 backdrop-blur-md border border-white/10 rounded-xl px-3.5 py-2 text-xs text-slate-200 shadow-lg pointer-events-none">
+            {questionFormat === 'satellite' ? (
+              <>
+                <span className="text-slate-200 font-medium">
+                  {viewMode === 'satellite'
+                    ? '衛星写真（ラベルなし）'
+                    : 'OpenStreetMap（ラベルなし）'}
+                </span>
+                <span className="text-slate-600" aria-hidden="true">
+                  ·
+                </span>
+                <span className="font-mono tabular-nums text-slate-400">
+                  Zoom {currentZoom} / 17
+                </span>
+              </>
+            ) : questionFormat === 'blankMap' ? (
+              <>
+                <span className="text-slate-200 font-medium">
+                  白地図モード（陸地輪郭・国境線）
+                </span>
+                <span className="text-slate-600" aria-hidden="true">
+                  ·
+                </span>
+                <span className="font-mono tabular-nums text-slate-400">
+                  Zoom {currentZoom.toFixed(1).replace(/\.0$/, '')} / 8
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-slate-200 font-medium">ハイサーグラフモード</span>
+                <span className="text-slate-600" aria-hidden="true">
+                  ·
+                </span>
+                <span className="font-mono tabular-nums text-slate-400">12区分（H除外）</span>
+              </>
+            )}
           </div>
 
           {/* Top-Right Hint Drawer */}
-          <div className="fixed top-16 sm:top-4 right-4 z-20">
+          <div className="fixed top-16 min-[500px]:top-4 right-4 z-30">
             <HintDrawer
               isOpen={isHintOpen}
               onToggleOpen={() => {
@@ -664,67 +1055,99 @@ export default function App() {
               }}
               location={currentLocation}
               mode={mode}
+              questionFormat={questionFormat}
               unlockedTier={unlockedHintTier}
               onUnlockNextHint={handleUnlockNextHint}
             />
           </div>
 
-          {/* Bottom-Left View Switcher (Satellite <-> Label-free OSM) & Return to Center */}
-          <div className="fixed bottom-4 left-4 z-20 flex flex-wrap items-center gap-2">
-            <div
-              className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 rounded-xl p-1 flex items-center gap-1 shadow-xl"
-              role="group"
-              aria-label="表示モード切替"
-            >
+          {/* Bottom-Left Controls (format-specific) */}
+          {questionFormat === 'satellite' && (
+            <div className="fixed bottom-4 left-4 z-20 flex flex-wrap items-center gap-2">
+              <div
+                className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 rounded-xl p-1 flex items-center gap-1 shadow-xl"
+                role="group"
+                aria-label="表示モード切替"
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    playClickSound(muted);
+                    setViewMode('satellite');
+                  }}
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
+                    viewMode === 'satellite'
+                      ? 'bg-emerald-500 text-slate-950'
+                      : 'text-slate-300 hover:text-white hover:bg-white/8'
+                  }`}
+                  aria-pressed={viewMode === 'satellite'}
+                >
+                  <Satellite className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>衛星写真</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    playClickSound(muted);
+                    setViewMode('osm');
+                  }}
+                  className={`px-3 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
+                    viewMode === 'osm'
+                      ? 'bg-amber-400 text-slate-950'
+                      : 'text-slate-300 hover:text-white hover:bg-white/8'
+                  }`}
+                  aria-pressed={viewMode === 'osm'}
+                >
+                  <MapIcon className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>OSM地図</span>
+                </button>
+              </div>
+
               <button
                 type="button"
                 onClick={() => {
                   playClickSound(muted);
-                  setViewMode('satellite');
+                  setResetCounter((c) => c + 1);
                 }}
-                className={`px-3 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
-                  viewMode === 'satellite'
-                    ? 'bg-emerald-500 text-slate-950'
-                    : 'text-slate-300 hover:text-white hover:bg-white/8'
-                }`}
-                aria-pressed={viewMode === 'satellite'}
+                className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
+                title="初期地点へ戻る (Space)"
               >
-                <Satellite className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>衛星写真</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound(muted);
-                  setViewMode('osm');
-                }}
-                className={`px-3 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
-                  viewMode === 'osm'
-                    ? 'bg-amber-400 text-slate-950'
-                    : 'text-slate-300 hover:text-white hover:bg-white/8'
-                }`}
-                aria-pressed={viewMode === 'osm'}
-              >
-                <MapIcon className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>OSM地図</span>
+                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">初期地点へ戻る</span>
               </button>
             </div>
+          )}
 
-            <button
-              type="button"
-              onClick={() => {
-                playClickSound(muted);
-                setResetCounter((c) => c + 1);
-              }}
-              className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
-              title="初期地点へ戻る (Space)"
-            >
-              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-              <span className="hidden sm:inline">初期地点へ戻る</span>
-            </button>
-          </div>
+          {questionFormat === 'blankMap' && (
+            <div className="fixed bottom-4 left-4 z-20 flex flex-col md:flex-row items-start md:items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  playClickSound(muted);
+                  setResetCounter((c) => c + 1);
+                }}
+                className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
+                title="世界全体を表示 (Space)"
+              >
+                <Globe2 className="w-3.5 h-3.5 text-sky-300" aria-hidden="true" />
+                <span>世界全体</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  playClickSound(muted);
+                  setFocusPinCounter((c) => c + 1);
+                }}
+                className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
+                title="ピンの周辺へズーム (Z)"
+              >
+                <Crosshair className="w-3.5 h-3.5 text-emerald-300" aria-hidden="true" />
+                <span>ピンへズーム</span>
+              </button>
+            </div>
+          )}
 
-          {/* Bottom-Right 13-Class Köppen Selector Dock */}
+          {/* Bottom-Right Köppen Selector Dock (13 classes, or 12 classes excluding H in Hythergraph Mode) */}
           <div className="fixed bottom-4 right-4 z-20">
             <KoppenSelectorDock
               selectedCode={selectedGuess}
@@ -738,6 +1161,7 @@ export default function App() {
                 playClickSound(muted);
                 setIsSelectorExpanded((e) => !e);
               }}
+              excludedCodes={excludedCodes}
             />
           </div>
         </>
@@ -748,6 +1172,7 @@ export default function App() {
         <RevealModal
           result={activeReveal}
           mode={mode}
+          questionFormat={questionFormat}
           isFinalStep={isFinalRevealStep}
           isPrefetchingNext={isPrefetchingNext}
           onContinue={handleContinueAfterReveal}

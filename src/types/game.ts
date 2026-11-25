@@ -17,6 +17,10 @@ export type KoppenCode =
 
 export type GameMode = 'standard5' | 'endless' | 'versus';
 
+export type QuestionFormat = 'satellite' | 'blankMap' | 'hythergraph';
+
+export type TimeLimitOption = 0 | 30 | 60 | 90 | 120;
+
 export interface VersusConfig {
   playerNames: [string, string];
   roundsPerPlayer: 3 | 5;
@@ -60,10 +64,8 @@ export type MatchQuality = 'exact' | 'group' | 'miss';
 
 export interface RoundResult {
   roundNumber: number;
-  playerIndex?: 0 | 1;
-  playerName?: string;
   location: RoundLocation;
-  guess: KoppenCode;
+  guess: KoppenCode | null;
   correctCode: KoppenCode;
   matchQuality: MatchQuality;
   baseScore: number;
@@ -71,11 +73,54 @@ export interface RoundResult {
   finalScore: number;
   hintTierUsed: HintTier;
   resolvedPlace: ReverseGeocodeResult | null;
+  playerIndex?: 0 | 1;
+  playerName?: string;
+  timedOut?: boolean;
+  questionFormat?: QuestionFormat;
 }
 
-export interface BestRecords {
+export interface FormatBestRecord {
   standard5BestScore: number;
   endlessBestStreak: number;
   endlessBestNoHintStreak: number;
   gamesPlayed: number;
+}
+
+export interface BestRecords extends FormatBestRecord {
+  byFormat: Record<QuestionFormat, FormatBestRecord>;
+}
+
+export interface GamePreferences {
+  questionFormat: QuestionFormat;
+  timeLimitSec: TimeLimitOption;
+  versusConfig: VersusConfig;
+  muted: boolean;
+}
+
+export interface PersistedGameSession {
+  version: 1;
+  savedAt: number;
+  phase: GamePhase;
+  mode: GameMode;
+  questionFormat: QuestionFormat;
+  viewMode: ViewMode;
+  timeLimitSec: TimeLimitOption;
+  timeLeftSec: number;
+  versusConfig: VersusConfig;
+  versusScores: [number, number];
+  currentRoundNumber: number;
+  currentLocation: RoundLocation | null;
+  selectedGuess: KoppenCode | null;
+  unlockedHintTier: HintTier;
+  totalHintsUsed: number;
+  isHintOpen: boolean;
+  isSelectorExpanded: boolean;
+  results: RoundResult[];
+  activeReveal: RoundResult | null;
+  totalScore: number;
+  streakCount: number;
+  bestSessionStreak: number;
+  isNewBest: boolean;
+  usedCoordKeys: string[];
+  usedCodes: KoppenCode[];
 }
