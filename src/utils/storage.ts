@@ -8,6 +8,7 @@ import type {
   KoppenCode,
   PersistedGameSession,
   QuestionFormat,
+  RecentRoundEntry,
   RoundLocation,
   RoundResult,
   TimeLimitOption,
@@ -18,6 +19,8 @@ import type {
 const RECORDS_STORAGE_KEY = 'koppen_guessr_records_v1';
 const PREFS_STORAGE_KEY = 'koppen_guessr_prefs_v1';
 const SESSION_STORAGE_KEY = 'koppen_guessr_session_v1';
+const RECENT_HISTORY_KEY = 'koppen_guessr_recent_v1';
+const MAX_RECENT_HISTORY = 45;
 
 const VALID_PHASES: readonly GamePhase[] = ['TITLE', 'LOADING', 'PLAYING', 'REVEAL', 'SUMMARY'];
 const VALID_MODES: readonly GameMode[] = ['standard5', 'endless', 'versus'];
@@ -328,4 +331,41 @@ export function clearGameSession(): void {
   } catch {
     // Ignore storage errors
   }
+}
+
+export function loadRecentHistory(): RecentRoundEntry[] {
+  try {
+    const raw = window.localStorage.getItem(RECENT_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is RecentRoundEntry => {
+        if (!item || typeof item !== 'object') return false;
+        const entry = item as Partial<RecentRoundEntry>;
+        return (
+          typeof entry.lat === 'number' &&
+          Number.isFinite(entry.lat) &&
+          typeof entry.lng === 'number' &&
+          Number.isFinite(entry.lng) &&
+          isKoppenCode(entry.code) &&
+          typeof entry.regionIndex === 'number' &&
+          Number.isInteger(entry.regionIndex)
+        );
+      })
+      .slice(-MAX_RECENT_HISTORY);
+  } catch {
+    return [];
+  }
+}
+
+export function recordRecentRound(entry: RecentRoundEntry): RecentRoundEntry[] {
+  const current = loadRecentHistory();
+  const next = [...current, entry].slice(-MAX_RECENT_HISTORY);
+  try {
+    window.localStorage.setItem(RECENT_HISTORY_KEY, JSON.stringify(next));
+  } catch {
+    // Ignore storage quota errors in restricted frames
+  }
+  return next;
 }

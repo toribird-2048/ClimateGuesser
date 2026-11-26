@@ -1,6 +1,16 @@
 import { ALL_KOPPEN_CODES, KOPPEN_CLASSES, classifyKoppen12 } from '../data/koppen.ts';
 import { SAMPLING_REGIONS, type SamplingRegion } from '../data/samplingRegions.ts';
-import type { ClimateData, KoppenCode, ReverseGeocodeResult, RoundLocation } from '../types/game.ts';
+import type {
+  ClimateData,
+  KoppenCode,
+  RecentRoundEntry,
+  ReverseGeocodeResult,
+  RoundLocation,
+} from '../types/game.ts';
+import {
+  sampleLandPointInBox,
+  sampleRandomGlobalLandCoordinate,
+} from '../utils/landMask.ts';
 
 const MONTH_KEYS = [
   'JAN',
@@ -47,18 +57,23 @@ function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function randomInRange(min: number, max: number): number {
-  return min + Math.random() * (max - min);
+interface ChosenRegion {
+  region: SamplingRegion;
+  regionIndex: number;
 }
 
 /**
- * Selects a sampling region biased toward unseen climate codes and unseen major groups
- * so each 5-round session explores diverse biomes across Earth.
+ * Selects a sampling region biased toward:
+ * 1) climate classes & groups unseen in the current session,
+ * 2) climate classes not played in the last ~12 rounds across sessions (prevents H/EF dominance),
+ * 3) region boxes not recently visited across sessions (prevents hitting the same spot repeatedly).
  */
 function chooseSamplingRegion(
   usedCodes: KoppenCode[],
-  excludeCodes: KoppenCode[] = []
-): SamplingRegion {
+  excludeCodes: KoppenCode[] = [],
+  recentHistory: RecentRoundEntry[] = [],
+  triedRegionIndices: Set<number> = new Set()
+): ChosenRegion {
   const excludeSet = new Set(excludeCodes);
   const allowedCodes = ALL_KOPPEN_CODES.filter((code) => !excludeSet.has(code));
   const usedCodeSet = new Set(usedCodes);
@@ -69,20 +84,58 @@ function chooseSamplingRegion(
   );
   const unusedCodes = allowedCodes.filter((code) => !usedCodeSet.has(code));
 
-  const poolCodes =
+  const baseCandidates =
     freshGroupCodes.length > 0
       ? freshGroupCodes
       : unusedCodes.length > 0
         ? unusedCodes
         : allowedCodes;
 
-  const chosenCode = pickRandom(poolCodes);
-  const matchingRegions = SAMPLING_REGIONS.filter((r) => r.targetCode === chosenCode);
-  if (matchingRegions.length > 0) {
-    return pickRandom(matchingRegions);
+  // Cross-game anti-repeat: prefer codes not seen in the last 12 rounds
+  const recentWindow = recentHistory.slice(-12);
+  const recentCodeSet = new Set(recentWindow.map((r) => r.code));
+  const notRecentlyPlayedCodes = baseCandidates.filter((code) => !recentCodeSet.has(code));
+
+  let codePool: KoppenCode[];
+  if (notRecentlyPlayedCodes.length > 0) {
+    codePool = notRecentlyPlayedCodes;
+  } else {
+    // Otherwise pick randomly among the least-recently-seen half of candidates
+    const lastIndexOfCode = new Map<KoppenCode, number>();
+    recentHistory.forEach((entry, idx) => lastIndexOfCode.set(entry.code, idx));
+    const sorted = [...baseCandidates].sort(
+      (a, b) => (lastIndexOfCode.get(a) ?? -1) - (lastIndexOfCode.get(b) ?? -1)
+    );
+    codePool = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2)));
   }
-  const fallbackRegions = SAMPLING_REGIONS.filter((r) => !excludeSet.has(r.targetCode));
-  return pickRandom(fallbackRegions.length > 0 ? fallbackRegions : SAMPLING_REGIONS);
+
+  const chosenCode = pickRandom(codePool);
+
+  // Within chosenCode, pick a region box not recently visited and not yet tried in this discovery loop
+  const indexedRegions = SAMPLING_REGIONS.map((region, regionIndex) => ({
+    region,
+    regionIndex,
+  })).filter((item) => item.region.targetCode === chosenCode);
+
+  const untriedRegions = indexedRegions.filter((item) => !triedRegionIndices.has(item.regionIndex));
+  const regionCandidates = untriedRegions.length > 0 ? untriedRegions : indexedRegions;
+
+  const recentRegionWindow = recentHistory.slice(-30);
+  const recentRegionSet = new Set(recentRegionWindow.map((r) => r.regionIndex));
+  const freshRegions = regionCandidates.filter((item) => !recentRegionSet.has(item.regionIndex));
+
+  if (freshRegions.length > 0) {
+    return pickRandom(freshRegions);
+  }
+
+  // If all boxes for this code were visited in the last 30 rounds, pick from the oldest half
+  const lastIndexOfRegion = new Map<number, number>();
+  recentHistory.forEach((entry, idx) => lastIndexOfRegion.set(entry.regionIndex, idx));
+  const sortedRegions = [...regionCandidates].sort(
+    (a, b) => (lastIndexOfRegion.get(a.regionIndex) ?? -1) - (lastIndexOfRegion.get(b.regionIndex) ?? -1)
+  );
+  const oldestHalf = sortedRegions.slice(0, Math.max(1, Math.ceil(sortedRegions.length / 2)));
+  return pickRandom(oldestHalf);
 }
 
 /**
@@ -97,7 +150,7 @@ async function fetchClimateFromNasaPower(lat: number, lng: number): Promise<Clim
   url.searchParams.set('format', 'JSON');
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), 4500);
 
   try {
     const response = await fetch(url.toString(), { signal: controller.signal });
@@ -163,7 +216,7 @@ async function fetchClimateFromOpenMeteo(lat: number, lng: number): Promise<Clim
   url.searchParams.set('timezone', 'UTC');
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 9000);
+  const timeout = setTimeout(() => controller.abort(), 5500);
 
   try {
     const response = await fetch(url.toString(), { signal: controller.signal });
@@ -402,49 +455,192 @@ export async function fetchReverseGeocode(
   return { placeName: null, countryName: null, formattedAddress: null };
 }
 
+function isNearRecentLocation(
+  lat: number,
+  lng: number,
+  recentHistory: RecentRoundEntry[]
+): boolean {
+  for (const entry of recentHistory) {
+    if (Math.abs(lat - entry.lat) < 2.0 && Math.abs(lng - entry.lng) < 2.0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+interface CandidatePoint {
+  lat: number;
+  lng: number;
+  chosenTargetCode: KoppenCode | null;
+  chosenRegionIndex: number;
+  isUnconstrainedGlobal: boolean;
+}
+
+async function generateCandidatePoint(
+  usedCodes: KoppenCode[],
+  usedCoordKeys: Set<string>,
+  excludeCodes: KoppenCode[],
+  recentHistory: RecentRoundEntry[],
+  triedRegionIndices: Set<number>,
+  allowUnconstrainedGlobal: boolean
+): Promise<CandidatePoint | null> {
+  const tryUnconstrainedGlobal = allowUnconstrainedGlobal && Math.random() < 0.3;
+
+  if (tryUnconstrainedGlobal) {
+    for (let t = 0; t < 4; t++) {
+      const pt = await sampleRandomGlobalLandCoordinate(-82, 81);
+      if (!pt) break;
+      const ck = `${Math.round(pt.lat)},${Math.round(pt.lng)}`;
+      if (!usedCoordKeys.has(ck) && !isNearRecentLocation(pt.lat, pt.lng, recentHistory)) {
+        return {
+          lat: pt.lat,
+          lng: pt.lng,
+          chosenTargetCode: null,
+          chosenRegionIndex: -1,
+          isUnconstrainedGlobal: true,
+        };
+      }
+    }
+  }
+
+  const { region, regionIndex } = chooseSamplingRegion(
+    usedCodes,
+    excludeCodes,
+    recentHistory,
+    triedRegionIndices
+  );
+  triedRegionIndices.add(regionIndex);
+
+  let lat: number | null = null;
+  let lng: number | null = null;
+
+  for (let jitter = 0; jitter < 4; jitter++) {
+    const pt = await sampleLandPointInBox(
+      region.minLat,
+      region.maxLat,
+      region.minLng,
+      region.maxLng
+    );
+    if (!pt) break;
+    lat = pt.lat;
+    lng = pt.lng;
+    const ck = `${Math.round(lat)},${Math.round(lng)}`;
+    if (!usedCoordKeys.has(ck) && !isNearRecentLocation(lat, lng, recentHistory)) {
+      break;
+    }
+  }
+
+  if (lat === null || lng === null) return null;
+  const coordKey = `${Math.round(lat)},${Math.round(lng)}`;
+  if (usedCoordKeys.has(coordKey)) return null;
+
+  return {
+    lat,
+    lng,
+    chosenTargetCode: region.targetCode,
+    chosenRegionIndex: regionIndex,
+    isUnconstrainedGlobal: false,
+  };
+}
+
 /**
- * Randomly samples an inland coordinate in a global climate belt and verifies its exact
+ * Randomly samples a land coordinate across Earth and verifies its exact
  * 14-class Köppen classification directly in the browser from real multi-decade climate normals.
+ *
+ * Uses parallel 2-candidate waves so network lookups resolve quickly without sequential retry stalls.
  */
 export async function discoverRandomRound(
   usedCodes: KoppenCode[],
   usedCoordKeys: Set<string>,
-  options: { maxAttempts?: number; excludeCodes?: KoppenCode[] } = {}
+  options: {
+    maxAttempts?: number;
+    excludeCodes?: KoppenCode[];
+    recentHistory?: RecentRoundEntry[];
+  } = {}
 ): Promise<RoundLocation> {
-  const maxAttempts = options.maxAttempts ?? 14;
+  const maxAttempts = options.maxAttempts ?? 18;
   const excludeCodes = options.excludeCodes ?? [];
+  const recentHistory = options.recentHistory ?? [];
   const excludeSet = new Set(excludeCodes);
+  const usedCodeSet = new Set(usedCodes);
+  const recentCodeWindow = new Set(recentHistory.slice(-10).map((r) => r.code));
+  const triedRegionIndices = new Set<number>();
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const region = chooseSamplingRegion(usedCodes, excludeCodes);
-    const lat = Number(randomInRange(region.minLat, region.maxLat).toFixed(4));
-    const lng = Number(randomInRange(region.minLng, region.maxLng).toFixed(4));
-    const coordKey = `${Math.round(lat)},${Math.round(lng)}`;
+  const concurrency = 2;
+  const totalWaves = Math.ceil(maxAttempts / concurrency);
+  let fallbackMatch: RoundLocation | null = null;
 
-    if (usedCoordKeys.has(coordKey)) {
-      continue;
+  for (let wave = 0; wave < totalWaves; wave++) {
+    const candidates: CandidatePoint[] = [];
+    for (let c = 0; c < concurrency; c++) {
+      const attemptIdx = wave * concurrency + c;
+      const cand = await generateCandidatePoint(
+        usedCodes,
+        usedCoordKeys,
+        excludeCodes,
+        recentHistory,
+        triedRegionIndices,
+        attemptIdx <= 2
+      );
+      if (cand) candidates.push(cand);
     }
 
-    try {
-      const climate = await fetchClimateForCoords(lat, lng);
-      // Skip coordinates that fail classification or match any excluded class (e.g., H in Hythergraph Mode)
-      if (!climate || !climate.climateCode || excludeSet.has(climate.climateCode)) {
+    if (candidates.length === 0) continue;
+
+    const evaluated = await Promise.all(
+      candidates.map(async (cand, idx) => {
+        try {
+          const climate = await fetchClimateForCoords(cand.lat, cand.lng);
+          if (!climate || !climate.climateCode || excludeSet.has(climate.climateCode)) {
+            return null;
+          }
+          return { cand, climate, attemptIdx: wave * concurrency + idx };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    for (const item of evaluated) {
+      if (!item) continue;
+      const { cand, climate, attemptIdx } = item;
+      const actualCode = climate.climateCode!;
+
+      const loc: RoundLocation = {
+        id: `${cand.lat.toFixed(4)}_${cand.lng.toFixed(4)}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        lat: cand.lat,
+        lng: cand.lng,
+        regionIndex: cand.chosenRegionIndex,
+        climate: climate as ClimateData & { climateCode: KoppenCode },
+      };
+
+      // Keep a valid fallback in case strict diversity filters reject early waves
+      if (!fallbackMatch && !usedCodeSet.has(actualCode)) {
+        fallbackMatch = loc;
+      }
+
+      if (attemptIdx < maxAttempts - 2 && usedCodeSet.has(actualCode)) {
         continue;
       }
 
-      return {
-        id: `${lat.toFixed(4)}_${lng.toFixed(4)}_${Date.now()}`,
-        lat,
-        lng,
-        climate: climate as ClimateData & { climateCode: KoppenCode },
-      };
-    } catch {
-      // Retry with another sample point
+      if (attemptIdx < 10) {
+        if (cand.isUnconstrainedGlobal) {
+          if (recentCodeWindow.has(actualCode)) continue;
+        } else if (cand.chosenTargetCode && actualCode !== cand.chosenTargetCode) {
+          if (recentCodeWindow.has(actualCode)) continue;
+        }
+      }
+
+      return loc;
     }
 
-    if (attempt < maxAttempts - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 150));
+    if (wave >= 3 && fallbackMatch) {
+      return fallbackMatch;
     }
+  }
+
+  if (fallbackMatch) {
+    return fallbackMatch;
   }
 
   throw new Error('気候データの取得に失敗しました。再試行してください。');

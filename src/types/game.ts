@@ -52,7 +52,16 @@ export interface RoundLocation {
   id: string;
   lat: number;
   lng: number;
+  regionIndex?: number;
   climate: ClimateData & { climateCode: KoppenCode };
+}
+
+export interface RecentRoundEntry {
+  lat: number;
+  lng: number;
+  code: KoppenCode;
+  regionIndex: number;
+  playedAt: number;
 }
 
 export interface ReverseGeocodeResult {

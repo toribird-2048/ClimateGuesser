@@ -2,19 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import type { GeoJsonObject, MultiLineString, MultiPolygon, Position } from 'geojson';
 import { feature, mesh } from 'topojson-client';
-import type { GeometryCollection, Objects, Topology } from 'topojson-specification';
 import type { RoundLocation } from '../types/game.ts';
+import { loadWorldAtlasTopology } from '../utils/landMask.ts';
 
 interface BlankMapViewportProps {
   location: RoundLocation;
   resetCounter: number;
   focusPinCounter: number;
   onZoomChange: (zoom: number) => void;
-}
-
-interface WorldAtlasObjects extends Objects {
-  countries: GeometryCollection;
-  land: GeometryCollection;
 }
 
 interface BlankMapLayers {
@@ -177,13 +172,7 @@ function buildWrappedBorders(rawBorders: GeoJsonObject): MultiLineString {
 
 function loadBlankMapLayers(): Promise<BlankMapLayers> {
   if (!cachedLayersPromise) {
-    cachedLayersPromise = fetch(`${import.meta.env.BASE_URL}world-50m.json`)
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error(`白地図データの読み込みに失敗しました (${res.status})`);
-        }
-        return res.json() as Promise<Topology<WorldAtlasObjects>>;
-      })
+    cachedLayersPromise = loadWorldAtlasTopology()
       .then((topology) => {
         const rawLand = feature(topology, topology.objects.land) as unknown as GeoJsonObject;
         const rawBorders = mesh(

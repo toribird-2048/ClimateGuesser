@@ -402,7 +402,7 @@ export function classifyKoppen12(
       const isDrySummer = pSdry < 40 && pSdry < pWwet / 3;
       const isDryWinter = pWdry < pSwet / 10;
 
-      if (isDrySummer && (!isDryWinter || pSdry <= pWdry)) {
+      if (isDrySummer && (!isDryWinter || pWinter >= pSummer)) {
         climateCode = 'Cs';
         rawCode = 'Cs';
         reasonSteps.push(

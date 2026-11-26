@@ -22,6 +22,7 @@ import type {
   KoppenCode,
   MatchQuality,
   QuestionFormat,
+  RecentRoundEntry,
   RoundLocation,
   RoundResult,
   TimeLimitOption,
@@ -42,6 +43,8 @@ import {
   loadBestRecords,
   loadGamePreferences,
   loadGameSession,
+  loadRecentHistory,
+  recordRecentRound,
   saveBestRecords,
   saveGamePreferences,
   saveGameSession,
@@ -79,10 +82,13 @@ export default function App() {
   const bootPrefs = initialBootRef.current.prefs;
   const bootSession = initialBootRef.current.session;
 
-  const prefetchPromiseRef = useRef<Promise<RoundLocation | null> | null>(null);
-  const prefetchedRoundRef = useRef<RoundLocation | null>(null);
+  const prefetchBufferRef = useRef<RoundLocation[]>([]);
+  const prefetchInFlightRef = useRef<Promise<RoundLocation | null> | null>(null);
+  const prefetchWorkerActiveRef = useRef<boolean>(false);
+  const prefetchGenerationRef = useRef<number>(0);
   const usedCoordKeysRef = useRef<Set<string>>(new Set(bootSession?.usedCoordKeys ?? []));
   const usedCodesRef = useRef<KoppenCode[]>(bootSession?.usedCodes ?? []);
+  const recentHistoryRef = useRef<RecentRoundEntry[]>(loadRecentHistory());
   const timeoutHandledRoundRef = useRef<string | null>(null);
   const hasResumedSessionRef = useRef(false);
 
@@ -156,23 +162,133 @@ export default function App() {
   const nextPlayerIndex = (currentRoundNumber % 2) as 0 | 1;
   const nextPlayerName = versusConfig.playerNames[nextPlayerIndex];
 
-  const startBackgroundPrefetch = useCallback((activeFormat: QuestionFormat) => {
-    setIsPrefetchingNext(true);
-    prefetchedRoundRef.current = null;
-    const excludeCodes: KoppenCode[] = activeFormat === 'hythergraph' ? ['H'] : [];
-    const promise = discoverRandomRound(usedCodesRef.current, usedCoordKeysRef.current, {
-      excludeCodes,
-    })
-      .then((loc) => {
-        prefetchedRoundRef.current = loc;
-        return loc;
-      })
-      .catch(() => null)
-      .finally(() => {
-        setIsPrefetchingNext(false);
+  const PREFETCH_BUFFER_CAPACITY = 3;
+
+  const ensurePrefetchBuffer = useCallback(
+    (activeFormat: QuestionFormat, targetDepth = PREFETCH_BUFFER_CAPACITY) => {
+      const excludeCodes: KoppenCode[] = activeFormat === 'hythergraph' ? ['H'] : [];
+      const excludeSet = new Set(excludeCodes);
+
+      // Prune any buffered items that conflict with current format exclusions or already used coords
+      prefetchBufferRef.current = prefetchBufferRef.current.filter((item) => {
+        const ck = `${Math.round(item.lat)},${Math.round(item.lng)}`;
+        return !excludeSet.has(item.climate.climateCode) && !usedCoordKeysRef.current.has(ck);
       });
-    prefetchPromiseRef.current = promise;
-  }, []);
+
+      if (prefetchBufferRef.current.length >= targetDepth || prefetchWorkerActiveRef.current) {
+        setIsPrefetchingNext(
+          prefetchBufferRef.current.length === 0 && prefetchWorkerActiveRef.current
+        );
+        return;
+      }
+
+      const gen = prefetchGenerationRef.current;
+      prefetchWorkerActiveRef.current = true;
+      setIsPrefetchingNext(prefetchBufferRef.current.length === 0);
+
+      void (async () => {
+        try {
+          while (
+            gen === prefetchGenerationRef.current &&
+            prefetchBufferRef.current.length < targetDepth
+          ) {
+            // Project session state across already-buffered rounds so all buffered items are diverse
+            const buffered = prefetchBufferRef.current;
+            const projectedUsedCodes: KoppenCode[] = [
+              ...usedCodesRef.current,
+              ...buffered.map((b) => b.climate.climateCode),
+            ];
+            const projectedCoordKeys = new Set<string>(usedCoordKeysRef.current);
+            for (const b of buffered) {
+              projectedCoordKeys.add(`${Math.round(b.lat)},${Math.round(b.lng)}`);
+            }
+            const projectedRecentHistory: RecentRoundEntry[] = [
+              ...recentHistoryRef.current,
+              ...buffered.map((b, i) => ({
+                lat: b.lat,
+                lng: b.lng,
+                code: b.climate.climateCode,
+                regionIndex: b.regionIndex ?? -1,
+                playedAt: Date.now() + i,
+              })),
+            ];
+
+            const singlePromise = discoverRandomRound(projectedUsedCodes, projectedCoordKeys, {
+              excludeCodes,
+              recentHistory: projectedRecentHistory,
+            }).catch(() => null);
+
+            prefetchInFlightRef.current = singlePromise;
+            const loc = await singlePromise;
+            if (prefetchInFlightRef.current === singlePromise) {
+              prefetchInFlightRef.current = null;
+            }
+
+            if (gen !== prefetchGenerationRef.current) {
+              break;
+            }
+
+            if (!loc) {
+              // Avoid tight retry loop on transient network outage
+              await new Promise((r) => setTimeout(r, 400));
+              continue;
+            }
+
+            const ck = `${Math.round(loc.lat)},${Math.round(loc.lng)}`;
+            const alreadyBuffered = prefetchBufferRef.current.some(
+              (b) => `${Math.round(b.lat)},${Math.round(b.lng)}` === ck
+            );
+            if (!usedCoordKeysRef.current.has(ck) && !alreadyBuffered) {
+              prefetchBufferRef.current.push(loc);
+              // Pre-warm reverse geocoding cache in the background so Reveal shows place name immediately
+              void fetchReverseGeocode(loc.lat, loc.lng);
+            }
+
+            setIsPrefetchingNext(false);
+          }
+        } finally {
+          if (gen === prefetchGenerationRef.current) {
+            prefetchWorkerActiveRef.current = false;
+            setIsPrefetchingNext(false);
+          }
+        }
+      })();
+    },
+    []
+  );
+
+  // Keep the 3-round prefetch buffer warm even on TITLE and SUMMARY screens
+  useEffect(() => {
+    if (phase === 'TITLE' || phase === 'SUMMARY') {
+      ensurePrefetchBuffer(questionFormat, PREFETCH_BUFFER_CAPACITY);
+    }
+  }, [phase, questionFormat, ensurePrefetchBuffer]);
+
+  const popNextBufferedLocation = useCallback(
+    (excludeCodes: KoppenCode[]): RoundLocation | null => {
+      const excludeSet = new Set(excludeCodes);
+      const usedCodeSet = new Set(usedCodesRef.current);
+
+      // Filter out any invalid/colliding items first
+      prefetchBufferRef.current = prefetchBufferRef.current.filter((item) => {
+        const ck = `${Math.round(item.lat)},${Math.round(item.lng)}`;
+        return !excludeSet.has(item.climate.climateCode) && !usedCoordKeysRef.current.has(ck);
+      });
+
+      if (prefetchBufferRef.current.length === 0) {
+        return null;
+      }
+
+      // Prefer a buffered location whose climate code has not yet been used in this game session
+      const freshIdx = prefetchBufferRef.current.findIndex(
+        (item) => !usedCodeSet.has(item.climate.climateCode)
+      );
+      const pickIdx = freshIdx >= 0 ? freshIdx : 0;
+      const [picked] = prefetchBufferRef.current.splice(pickIdx, 1);
+      return picked ?? null;
+    },
+    []
+  );
 
   const loadRound = useCallback(
     async (
@@ -182,7 +298,6 @@ export default function App() {
       activeTimeLimit: TimeLimitOption,
       activeVersusTotalRounds = versusTotalRounds
     ) => {
-      setPhase('LOADING');
       setLoadingError(null);
       setSelectedGuess(null);
       setUnlockedHintTier(0);
@@ -197,49 +312,66 @@ export default function App() {
       const excludeCodes: KoppenCode[] = activeFormat === 'hythergraph' ? ['H'] : [];
 
       try {
-        let nextLoc: RoundLocation | null = prefetchedRoundRef.current;
-        if (!nextLoc && prefetchPromiseRef.current) {
-          nextLoc = await prefetchPromiseRef.current;
-        }
-        prefetchedRoundRef.current = null;
-        prefetchPromiseRef.current = null;
+        // 1. Try popping immediately from our multi-round prefetch buffer (0ms instant transition!)
+        let nextLoc: RoundLocation | null = popNextBufferedLocation(excludeCodes);
 
-        if (nextLoc && excludeCodes.includes(nextLoc.climate.climateCode)) {
-          nextLoc = null;
+        // 2. If buffer was empty, show LOADING overlay and await in-flight prefetch or discover now
+        if (!nextLoc) {
+          setPhase('LOADING');
+          if (prefetchInFlightRef.current) {
+            const candidate = await prefetchInFlightRef.current;
+            nextLoc = popNextBufferedLocation(excludeCodes);
+            if (
+              !nextLoc &&
+              candidate &&
+              !excludeCodes.includes(candidate.climate.climateCode) &&
+              !usedCoordKeysRef.current.has(
+                `${Math.round(candidate.lat)},${Math.round(candidate.lng)}`
+              )
+            ) {
+              nextLoc = candidate;
+            }
+          }
         }
 
         if (!nextLoc) {
+          setPhase('LOADING');
           nextLoc = await discoverRandomRound(usedCodesRef.current, usedCoordKeysRef.current, {
             excludeCodes,
+            recentHistory: recentHistoryRef.current,
           });
         }
 
         usedCoordKeysRef.current.add(`${Math.round(nextLoc.lat)},${Math.round(nextLoc.lng)}`);
         usedCodesRef.current = [...usedCodesRef.current, nextLoc.climate.climateCode];
+        recentHistoryRef.current = recordRecentRound({
+          lat: nextLoc.lat,
+          lng: nextLoc.lng,
+          code: nextLoc.climate.climateCode,
+          regionIndex: nextLoc.regionIndex ?? -1,
+          playedAt: Date.now(),
+        });
+
+        // Ensure reverse geocode is warmed for the active round while the user plays
+        void fetchReverseGeocode(nextLoc.lat, nextLoc.lng);
 
         setCurrentLocation(nextLoc);
         setCurrentZoom(activeFormat === 'blankMap' ? 2 : 13);
         setTimeLeftSec(activeTimeLimit);
         setPhase('PLAYING');
 
-        // Prefetch the next round in the background while the player explores
-        const hasMoreRounds =
-          activeMode === 'endless' ||
-          (activeMode === 'standard5' && roundNum < STANDARD_ROUNDS) ||
-          (activeMode === 'versus' && roundNum < activeVersusTotalRounds);
-
-        if (hasMoreRounds) {
-          startBackgroundPrefetch(activeFormat);
-        }
+        // Continuously replenish the 3-round background buffer while the player explores
+        ensurePrefetchBuffer(activeFormat, PREFETCH_BUFFER_CAPACITY);
       } catch (err) {
         const msg =
           err instanceof Error
             ? err.message
             : '地点データの取得中にエラーが発生しました。';
         setLoadingError(msg);
+        setPhase('LOADING');
       }
     },
-    [startBackgroundPrefetch, versusTotalRounds]
+    [ensurePrefetchBuffer, popNextBufferedLocation, versusTotalRounds]
   );
 
   const handleStartMode = useCallback(
@@ -254,8 +386,6 @@ export default function App() {
       playClickSound(muted);
       usedCoordKeysRef.current = new Set();
       usedCodesRef.current = [];
-      prefetchedRoundRef.current = null;
-      prefetchPromiseRef.current = null;
 
       const resolvedVersus = options.versusConfig ?? versusConfig;
       if (options.versusConfig) {
@@ -375,10 +505,6 @@ export default function App() {
     if (!saved) return;
 
     const savedVersusTotal = saved.versusConfig.roundsPerPlayer * 2;
-    const hasMoreRounds =
-      saved.mode === 'endless' ||
-      (saved.mode === 'standard5' && saved.currentRoundNumber < STANDARD_ROUNDS) ||
-      (saved.mode === 'versus' && saved.currentRoundNumber < savedVersusTotal);
 
     if (saved.phase === 'LOADING') {
       void loadRound(
@@ -391,8 +517,11 @@ export default function App() {
       return;
     }
 
-    if (saved.phase === 'PLAYING' && hasMoreRounds) {
-      startBackgroundPrefetch(saved.questionFormat);
+    if (saved.phase === 'PLAYING') {
+      if (saved.currentLocation) {
+        void fetchReverseGeocode(saved.currentLocation.lat, saved.currentLocation.lng);
+      }
+      ensurePrefetchBuffer(saved.questionFormat, PREFETCH_BUFFER_CAPACITY);
       return;
     }
 
@@ -410,11 +539,9 @@ export default function App() {
           );
         });
       }
-      if (hasMoreRounds) {
-        startBackgroundPrefetch(saved.questionFormat);
-      }
+      ensurePrefetchBuffer(saved.questionFormat, PREFETCH_BUFFER_CAPACITY);
     }
-  }, [loadRound, startBackgroundPrefetch]);
+  }, [loadRound, ensurePrefetchBuffer]);
 
   const handleUnlockNextHint = useCallback(() => {
     if (unlockedHintTier >= 3) return;
