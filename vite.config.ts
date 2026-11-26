@@ -35,7 +35,7 @@ export default defineConfig(({ command }) => {
         name: 'subpath-static-bundle',
         apply: 'build',
         buildStart(): void {
-          const distRoot = path.resolve(import.meta.dirname, 'dist');
+          const distRoot = path.resolve(process.cwd(), 'dist');
           if (fs.existsSync(distRoot)) {
             fs.rmSync(distRoot, { recursive: true, force: true });
           }
@@ -44,15 +44,16 @@ export default defineConfig(({ command }) => {
           if (error) {
             return;
           }
-          const distRoot = path.resolve(import.meta.dirname, 'dist');
+          const distRoot = path.resolve(process.cwd(), 'dist');
           const subDir = path.resolve(distRoot, SUBPATH_DIR);
-          const srcAssets = path.resolve(import.meta.dirname, 'src/assets');
+          const srcAssets = path.resolve(process.cwd(), 'src/assets');
           const distAssets = path.resolve(subDir, 'src/assets');
           if (fs.existsSync(subDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, { recursive: true, force: true });
           }
 
           // Redirect root "/" to "/climateGuessr/" so both root preview URLs and app.toribird.xyz/climateGuessr work cleanly
+          fs.mkdirSync(distRoot, { recursive: true });
           const rootRedirectHtml = `<!doctype html>
 <html lang="ja">
   <head>
@@ -72,7 +73,7 @@ export default defineConfig(({ command }) => {
     ],
     resolve: {
       alias: {
-        '@': path.resolve(import.meta.dirname, '.'),
+        '@': path.resolve(process.cwd(), '.'),
       },
     },
     server: {

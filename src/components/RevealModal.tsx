@@ -165,15 +165,15 @@ export function RevealModal({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-6 bg-slate-950/82 backdrop-blur-md overflow-y-auto"
+      className="fixed inset-0 z-40 flex items-center justify-center p-2.5 sm:p-6 bg-slate-950/82 backdrop-blur-md"
       role="dialog"
       aria-modal="true"
       aria-labelledby="reveal-verdict-title"
     >
-      <div className="w-full max-w-5xl bg-[#0F172A] border border-white/12 rounded-2xl shadow-2xl overflow-hidden my-auto">
-        {/* Verdict Header */}
+      <div className="w-full max-w-5xl max-h-[calc(100dvh-1.25rem)] sm:max-h-[calc(100dvh-3rem)] bg-[#0F172A] border border-white/12 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+        {/* Pinned Verdict Header */}
         <div
-          className={`px-6 py-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-4 ${verdictConfig.bgClass}`}
+          className={`shrink-0 px-4 sm:px-6 py-3 sm:py-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-3 sm:gap-4 ${verdictConfig.bgClass}`}
         >
           <div className="flex items-center gap-3.5 min-w-0">
             <VerdictIcon
@@ -230,9 +230,9 @@ export function RevealModal({
           </div>
         </div>
 
-        {/* Versus Live Scoreboard Strip */}
+        {/* Pinned Versus Live Scoreboard Strip */}
         {mode === 'versus' && versusNames && versusScores && (
-          <div className="px-6 py-2.5 bg-slate-950/70 border-b border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs sm:text-sm">
+          <div className="shrink-0 px-4 sm:px-6 py-2 bg-slate-950/70 border-b border-white/10 flex flex-wrap items-center justify-between gap-3 text-xs sm:text-sm">
             <div className="flex items-center gap-4 font-mono tabular-nums">
               <span
                 className={`inline-flex items-center gap-1.5 ${
@@ -265,13 +265,14 @@ export function RevealModal({
           </div>
         )}
 
-        {/* 2-Column Reveal Body */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 items-stretch divide-y lg:divide-y-0 lg:divide-x divide-white/10">
-          {/* Left: Interactive OpenStreetMap Reveal Map & Place Info */}
-          <div className="flex flex-col">
-            <div className="relative w-full h-[260px] lg:h-[310px] bg-slate-900">
-              <div ref={mapContainerRef} className="w-full h-full z-0" />
-            </div>
+        {/* Scrollable 2-Column Reveal Body */}
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+          <div className="grid grid-cols-1 lg:grid-cols-2 items-stretch divide-y lg:divide-y-0 lg:divide-x divide-white/10">
+            {/* Left: Interactive OpenStreetMap Reveal Map & Place Info */}
+            <div className="flex flex-col">
+              <div className="relative w-full h-[210px] sm:h-[250px] lg:h-[300px] bg-slate-900">
+                <div ref={mapContainerRef} className="w-full h-full z-0" />
+              </div>
 
             <div className="p-5 space-y-2 flex-1 bg-slate-950/35">
               <div className="flex items-start gap-2.5">
@@ -383,34 +384,36 @@ export function RevealModal({
                 </ol>
               </div>
             </div>
-
-            <div className="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-3">
-              <div className="text-xs text-slate-400">
-                {!isFinalStep && isPrefetchingNext
-                  ? '次の地点をバックグラウンドで準備中...'
-                  : `Round ${result.roundNumber} · ${FORMAT_LABELS[questionFormat]}`}
-              </div>
-              <div className="flex items-center gap-2.5 shrink-0">
-                {mode === 'endless' && onEndEndless && (
-                  <button
-                    type="button"
-                    onClick={onEndEndless}
-                    className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-medium transition-colors cursor-pointer whitespace-nowrap"
-                  >
-                    結果を見て終了
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={onContinue}
-                  className="px-5 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-semibold transition-colors inline-flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  <span>{continueLabel}</span>
-                  <ArrowRight className="w-4 h-4" aria-hidden="true" />
-                  <span className="hidden sm:inline text-xs font-mono opacity-75">Enter</span>
-                </button>
-              </div>
             </div>
+          </div>
+        </div>
+
+        {/* Pinned Bottom Action Bar (always visible without scrolling on all screen sizes) */}
+        <div className="shrink-0 px-4 sm:px-6 py-3 border-t border-white/10 bg-[#0B1224]/95 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="hidden sm:block text-xs text-slate-400">
+            {!isFinalStep && isPrefetchingNext
+              ? '次の地点をバックグラウンドで準備中...'
+              : `Round ${result.roundNumber} · ${FORMAT_LABELS[questionFormat]}`}
+          </div>
+          <div className="flex items-center gap-2.5 w-full sm:w-auto">
+            {mode === 'endless' && onEndEndless && (
+              <button
+                type="button"
+                onClick={onEndEndless}
+                className="min-h-[44px] px-4 py-2.5 rounded-xl sm:rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-medium transition-colors cursor-pointer whitespace-nowrap"
+              >
+                結果を見て終了
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onContinue}
+              className="flex-1 sm:flex-none min-h-[44px] px-5 py-2.5 rounded-xl sm:rounded-lg bg-emerald-500 hover:bg-emerald-400 active:scale-[0.99] text-slate-950 text-sm font-semibold transition-all inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <span>{continueLabel}</span>
+              <ArrowRight className="w-4 h-4" aria-hidden="true" />
+              <span className="hidden sm:inline text-xs font-mono opacity-75">Enter</span>
+            </button>
           </div>
         </div>
       </div>
