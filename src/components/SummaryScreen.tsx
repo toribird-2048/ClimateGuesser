@@ -178,7 +178,7 @@ export function SummaryScreen({
             className="hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5"
           >
             <BookOpen className="w-4 h-4" aria-hidden="true" />
-            <span>13区分早見表</span>
+            <span>14区分早見表</span>
           </button>
           <button
             type="button"

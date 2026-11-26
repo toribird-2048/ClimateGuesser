@@ -33,6 +33,7 @@ const VALID_KOPPEN_CODES: readonly KoppenCode[] = [
   'Cfa',
   'Cfb',
   'Cs',
+  'Cw',
   'Df',
   'Dw',
   'ET',

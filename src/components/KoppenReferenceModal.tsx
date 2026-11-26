@@ -21,10 +21,10 @@ export function KoppenReferenceModal({ onClose }: KoppenReferenceModalProps) {
               className="text-lg font-bold text-slate-100"
               style={{ fontFamily: 'var(--font-display)' }}
             >
-              ケッペン気候区分 早見表（全13区分）
+              ケッペン気候区分 早見表（全14区分）
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              出題対象の13区分（高山気候Hを含む）と、衛星写真・OpenStreetMap で注目すべき景観の手がかり
+              出題対象の14区分（温帯冬季少雨Cw・高山気候Hを含む）と、衛星写真・OpenStreetMap で注目すべき景観の手がかり
             </p>
           </div>
           <button

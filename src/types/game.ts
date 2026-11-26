@@ -9,6 +9,7 @@ export type KoppenCode =
   | 'Cfa'
   | 'Cfb'
   | 'Cs'
+  | 'Cw'
   | 'Df'
   | 'Dw'
   | 'ET'

@@ -50,7 +50,7 @@ export const KOPPEN_GROUPS: KoppenGroupInfo[] = [
     accentTextClass: 'text-sky-300',
     accentBorderClass: 'border-sky-400/50',
     accentBgClass: 'bg-sky-500/15',
-    codes: ['Cfa', 'Cfb', 'Cs'],
+    codes: ['Cfa', 'Cfb', 'Cs', 'Cw'],
   },
   {
     group: 'D',
@@ -157,6 +157,15 @@ export const KOPPEN_CLASSES: Record<KoppenCode, KoppenClassInfo> = {
     criteriaSummary: '最寒月 -3〜18℃・夏に明確な乾季',
     landscapeClues: 'オリーブ・ブドウ・柑橘類・イトスギなどの硬葉樹。夏の強い日差しに映える白壁とオレンジ瓦屋根。',
   },
+  Cw: {
+    code: 'Cw',
+    group: 'C',
+    nameJa: '温帯冬季少雨気候',
+    shortNameJa: '温帯冬季少雨',
+    nameEn: 'Monsoon-Influenced Humid Subtropical',
+    criteriaSummary: '最寒月 -3〜18℃・冬に顕著な乾季',
+    landscapeClues: 'インド北部・中国南西部・メキシコ高原・南部アフリカ高原など。夏の雨季に潤う水田・棚田・亜熱帯林と、冬の乾季に乾いた丘陵や高原草原。',
+  },
   Df: {
     code: 'Df',
     group: 'D',
@@ -213,6 +222,7 @@ export const ALL_KOPPEN_CODES: KoppenCode[] = [
   'Cfa',
   'Cfb',
   'Cs',
+  'Cw',
   'Df',
   'Dw',
   'ET',
@@ -249,9 +259,8 @@ export function getLatitudeBandJa(lat: number): {
 
 /**
  * Standard Köppen-Geiger climate classifier (Peel et al. / textbook -3°C C/D threshold)
- * mapped strictly onto the 12 target classes requested by the user:
- * Af, Am, Aw, BW, BS, Cfa, Cfb, Cs, Df, Dw, ET, EF.
- * Returns climateCode: null if a location falls into Cw (excluded from the 12-class set).
+ * mapped onto the 14 target classes:
+ * Af, Am, Aw, BW, BS, Cfa, Cfb, Cs, Cw, Df, Dw, ET, EF, H.
  */
 export function classifyKoppen12(
   monthlyTempC: number[],
@@ -400,10 +409,10 @@ export function classifyKoppen12(
           `夏の最少雨月（${r0(pSdry)}mm）が 40mm 未満かつ冬の最多雨月（${r0(pWwet)}mm）の 1/3 未満のため「地中海性気候（Cs）」と判定。`
         );
       } else if (isDryWinter) {
-        climateCode = null;
+        climateCode = 'Cw';
         rawCode = 'Cw';
         reasonSteps.push(
-          `冬の最少雨月（${r0(pWdry)}mm）が夏の最多雨月（${r0(pSwet)}mm）の 1/10 未満（Cw）。`
+          `冬の最少雨月（${r0(pWdry)}mm）が夏の最多雨月（${r0(pSwet)}mm）の 1/10 未満のため「温帯冬季少雨気候（Cw）」と判定。`
         );
       } else if (maxTemp >= 22) {
         climateCode = 'Cfa';

@@ -40,21 +40,21 @@ const FORMAT_OPTIONS: {
   {
     value: 'satellite',
     title: '衛星・OSM探索',
-    shortTag: '13区分 · 風景推理',
+    shortTag: '14区分 · 風景推理',
     description: '地名ラベルなしの衛星写真とOSM地図で植生・地形・街並みから推理',
     icon: Satellite,
   },
   {
     value: 'blankMap',
     title: '白地図モード',
-    shortTag: '13区分 · 地理分布暗記',
+    shortTag: '14区分 · 地理分布暗記',
     description: '陸地輪郭と国境線のみの白地図に打たれたピンの位置から気候を推理',
     icon: MapIcon,
   },
   {
     value: 'hythergraph',
     title: 'ハイサーグラフモード',
-    shortTag: '12区分（H除外）· グラフ判別',
+    shortTag: '13区分（H除外）· グラフ判別',
     description: '月降水量×月平均気温の12ヶ月閉曲線グラフのみから気候区分を判別',
     icon: Activity,
   },
@@ -115,7 +115,7 @@ export function TitleScreen({
     questionFormat === 'hythergraph'
       ? KOPPEN_GROUPS.filter((g) => g.group !== 'H')
       : KOPPEN_GROUPS;
-  const classCount = questionFormat === 'hythergraph' ? 12 : 13;
+  const classCount = questionFormat === 'hythergraph' ? 13 : 14;
 
   const handleStartVersus = () => {
     const cleanP1 = p1Name.trim() || 'プレイヤー1';
@@ -547,7 +547,7 @@ export function TitleScreen({
               className="inline-flex items-center gap-1.5 text-emerald-300 hover:text-emerald-200 font-medium cursor-pointer whitespace-nowrap"
             >
               <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>13区分の早見表を見る</span>
+              <span>14区分の早見表を見る</span>
             </button>
           </div>
         </section>

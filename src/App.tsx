@@ -1040,7 +1040,7 @@ export default function App() {
                 <span className="text-slate-600" aria-hidden="true">
                   ·
                 </span>
-                <span className="font-mono tabular-nums text-slate-400">12区分（H除外）</span>
+                <span className="font-mono tabular-nums text-slate-400">13区分（H除外）</span>
               </>
             )}
           </div>

@@ -9,7 +9,7 @@ export interface SamplingRegion {
 }
 
 /**
- * Strictly inland/continental bounding boxes distributed across all 12 Köppen biomes
+ * Strictly inland/continental bounding boxes distributed across all 14 Köppen biomes
  * so every randomly sampled coordinate lands on real terrain (never open ocean)
  * and is verified scientifically against live 10-year monthly climate normals.
  */
@@ -77,6 +77,14 @@ export const SAMPLING_REGIONS: SamplingRegion[] = [
   { targetCode: 'Cs', minLat: -35.8, maxLat: -33.2, minLng: -71.4, maxLng: -70.8 },
   { targetCode: 'Cs', minLat: -34.0, maxLat: -32.8, minLng: 18.6, maxLng: 19.6 },
   { targetCode: 'Cs', minLat: -34.2, maxLat: -32.0, minLng: 115.8, maxLng: 117.2 },
+
+  // Cw — Monsoon-Influenced Humid Subtropical / Dry-Winter Temperate (N India, Yunnan/Guangxi, N Vietnam, Southern Africa Plateau, Central Mexico Plateau, Minas Gerais Brazil)
+  { targetCode: 'Cw', minLat: 25.6, maxLat: 27.3, minLng: 80.5, maxLng: 85.5 },
+  { targetCode: 'Cw', minLat: 23.8, maxLat: 25.4, minLng: 102.2, maxLng: 105.0 },
+  { targetCode: 'Cw', minLat: 20.8, maxLat: 22.0, minLng: 105.0, maxLng: 106.2 },
+  { targetCode: 'Cw', minLat: -18.5, maxLat: -13.0, minLng: 27.5, maxLng: 32.0 },
+  { targetCode: 'Cw', minLat: 19.8, maxLat: 21.1, minLng: -103.5, maxLng: -100.8 },
+  { targetCode: 'Cw', minLat: -21.2, maxLat: -18.8, minLng: -46.8, maxLng: -43.5 },
 
   // Df — Subarctic / Humid Continental (Finland, Sweden, Canada Boreal, Hokkaido, European Russia, Western Siberia)
   { targetCode: 'Df', minLat: 61.5, maxLat: 67.2, minLng: 23.0, maxLng: 29.0 },

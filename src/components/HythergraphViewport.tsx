@@ -33,7 +33,7 @@ export function HythergraphViewport({
             {showGuides ? (
               <span className="text-amber-300 font-semibold">基準線ガイド表示中</span>
             ) : (
-              <span>12区分 · 高山H除外</span>
+              <span>13区分 · 高山H除外</span>
             )}
           </div>
         </div>

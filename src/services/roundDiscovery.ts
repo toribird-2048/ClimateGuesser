@@ -404,7 +404,7 @@ export async function fetchReverseGeocode(
 
 /**
  * Randomly samples an inland coordinate in a global climate belt and verifies its exact
- * 13-class Köppen classification directly in the browser from real multi-decade climate normals.
+ * 14-class Köppen classification directly in the browser from real multi-decade climate normals.
  */
 export async function discoverRandomRound(
   usedCodes: KoppenCode[],
@@ -427,7 +427,7 @@ export async function discoverRandomRound(
 
     try {
       const climate = await fetchClimateForCoords(lat, lng);
-      // Skip coordinates that resolve to Cw or any excluded class (e.g., H in Hythergraph Mode)
+      // Skip coordinates that fail classification or match any excluded class (e.g., H in Hythergraph Mode)
       if (!climate || !climate.climateCode || excludeSet.has(climate.climateCode)) {
         continue;
       }
