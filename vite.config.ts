@@ -7,7 +7,7 @@ import { defineConfig } from 'vite';
 export default defineConfig(() => {
   return {
     // Relative asset base so dist/ works on both root domains and subpath hosts (e.g. GitHub Pages)
-    base: './',
+    base: '/climateGuessr/',
     plugins: [
       react(),
       tailwindcss(),
