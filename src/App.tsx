@@ -123,7 +123,7 @@ export default function App() {
 
   const [isHintOpen, setIsHintOpen] = useState<boolean>(bootSession?.isHintOpen ?? false);
   const [isSelectorExpanded, setIsSelectorExpanded] = useState<boolean>(
-    bootSession?.isSelectorExpanded ?? true
+    bootSession?.isSelectorExpanded ?? (typeof window !== 'undefined' ? window.innerWidth >= 768 : true)
   );
   const [isReferenceOpen, setIsReferenceOpen] = useState(false);
 
@@ -273,7 +273,7 @@ export default function App() {
       setBestSessionStreak(0);
       setIsNewBest(false);
       setTotalHintsUsed(0);
-      setIsSelectorExpanded(true);
+      setIsSelectorExpanded(window.innerWidth >= 768);
 
       void loadRound(
         1,
@@ -1061,108 +1061,111 @@ export default function App() {
             />
           </div>
 
-          {/* Bottom-Left Controls (format-specific) */}
-          {questionFormat === 'satellite' && (
-            <div className="fixed bottom-4 left-4 z-20 flex flex-wrap items-center gap-2">
-              <div
-                className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 rounded-xl p-1 flex items-center gap-1 shadow-xl"
-                role="group"
-                aria-label="表示モード切替"
-              >
+          {/* Bottom Controls & Selector Dock: stacked cleanly on mobile (< md), split corners on desktop (>= md) */}
+          <div className="fixed bottom-3 inset-x-3 z-20 flex flex-col gap-2 pointer-events-none md:inset-0 md:block">
+            {questionFormat === 'satellite' && (
+              <div className="pointer-events-auto flex flex-wrap items-center gap-2 md:fixed md:bottom-4 md:left-4">
+                <div
+                  className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 rounded-xl p-1 flex items-center gap-1 shadow-xl"
+                  role="group"
+                  aria-label="表示モード切替"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playClickSound(muted);
+                      setViewMode('satellite');
+                    }}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
+                      viewMode === 'satellite'
+                        ? 'bg-emerald-500 text-slate-950'
+                        : 'text-slate-300 hover:text-white hover:bg-white/8'
+                    }`}
+                    aria-pressed={viewMode === 'satellite'}
+                  >
+                    <Satellite className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>衛星写真</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playClickSound(muted);
+                      setViewMode('osm');
+                    }}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
+                      viewMode === 'osm'
+                        ? 'bg-amber-400 text-slate-950'
+                        : 'text-slate-300 hover:text-white hover:bg-white/8'
+                    }`}
+                    aria-pressed={viewMode === 'osm'}
+                  >
+                    <MapIcon className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>OSM地図</span>
+                  </button>
+                </div>
+
                 <button
                   type="button"
                   onClick={() => {
                     playClickSound(muted);
-                    setViewMode('satellite');
+                    setResetCounter((c) => c + 1);
                   }}
-                  className={`px-3 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
-                    viewMode === 'satellite'
-                      ? 'bg-emerald-500 text-slate-950'
-                      : 'text-slate-300 hover:text-white hover:bg-white/8'
-                  }`}
-                  aria-pressed={viewMode === 'satellite'}
+                  className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
+                  title="初期地点へ戻る (Space)"
                 >
-                  <Satellite className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>衛星写真</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    playClickSound(muted);
-                    setViewMode('osm');
-                  }}
-                  className={`px-3 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer ${
-                    viewMode === 'osm'
-                      ? 'bg-amber-400 text-slate-950'
-                      : 'text-slate-300 hover:text-white hover:bg-white/8'
-                  }`}
-                  aria-pressed={viewMode === 'osm'}
-                >
-                  <MapIcon className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>OSM地図</span>
+                  <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span className="hidden sm:inline">初期地点へ戻る</span>
                 </button>
               </div>
+            )}
 
-              <button
-                type="button"
-                onClick={() => {
+            {questionFormat === 'blankMap' && (
+              <div className="pointer-events-auto flex items-center gap-2 md:fixed md:bottom-4 md:left-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    playClickSound(muted);
+                    setResetCounter((c) => c + 1);
+                  }}
+                  className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
+                  title="世界全体を表示 (Space)"
+                >
+                  <Globe2 className="w-3.5 h-3.5 text-sky-300" aria-hidden="true" />
+                  <span>世界全体</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    playClickSound(muted);
+                    setFocusPinCounter((c) => c + 1);
+                  }}
+                  className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
+                  title="ピンの周辺へズーム (Z)"
+                >
+                  <Crosshair className="w-3.5 h-3.5 text-emerald-300" aria-hidden="true" />
+                  <span>ピンへズーム</span>
+                </button>
+              </div>
+            )}
+
+            {/* Köppen Selector Dock (Compact 2-step A-E/H picker when collapsed, full grid when expanded) */}
+            <div className="pointer-events-auto w-full md:w-auto md:fixed md:bottom-4 md:right-4">
+              <KoppenSelectorDock
+                selectedCode={selectedGuess}
+                onSelectCode={(code) => {
                   playClickSound(muted);
-                  setResetCounter((c) => c + 1);
+                  setSelectedGuess(code);
                 }}
-                className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
-                title="初期地点へ戻る (Space)"
-              >
-                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                <span className="hidden sm:inline">初期地点へ戻る</span>
-              </button>
+                onGroupTap={() => playClickSound(muted)}
+                onSubmitGuess={handleSubmitGuess}
+                isExpanded={isSelectorExpanded}
+                onToggleExpanded={() => {
+                  playClickSound(muted);
+                  setIsSelectorExpanded((e) => !e);
+                }}
+                excludedCodes={excludedCodes}
+              />
             </div>
-          )}
-
-          {questionFormat === 'blankMap' && (
-            <div className="fixed bottom-4 left-4 z-20 flex flex-col md:flex-row items-start md:items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound(muted);
-                  setResetCounter((c) => c + 1);
-                }}
-                className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
-                title="世界全体を表示 (Space)"
-              >
-                <Globe2 className="w-3.5 h-3.5 text-sky-300" aria-hidden="true" />
-                <span>世界全体</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound(muted);
-                  setFocusPinCounter((c) => c + 1);
-                }}
-                className="bg-[#0F172A]/88 backdrop-blur-md border border-white/10 hover:bg-slate-800/90 text-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium inline-flex items-center gap-1.5 transition-colors shadow-xl whitespace-nowrap cursor-pointer"
-                title="ピンの周辺へズーム (Z)"
-              >
-                <Crosshair className="w-3.5 h-3.5 text-emerald-300" aria-hidden="true" />
-                <span>ピンへズーム</span>
-              </button>
-            </div>
-          )}
-
-          {/* Bottom-Right Köppen Selector Dock (13 classes, or 12 classes excluding H in Hythergraph Mode) */}
-          <div className="fixed bottom-4 right-4 z-20">
-            <KoppenSelectorDock
-              selectedCode={selectedGuess}
-              onSelectCode={(code) => {
-                playClickSound(muted);
-                setSelectedGuess(code);
-              }}
-              onSubmitGuess={handleSubmitGuess}
-              isExpanded={isSelectorExpanded}
-              onToggleExpanded={() => {
-                playClickSound(muted);
-                setIsSelectorExpanded((e) => !e);
-              }}
-              excludedCodes={excludedCodes}
-            />
           </div>
         </>
       )}

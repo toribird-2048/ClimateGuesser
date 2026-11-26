@@ -15,7 +15,7 @@ export function HythergraphViewport({
   const showSummaryStats = unlockedHintTier >= 3;
 
   return (
-    <div className="w-full h-full atlas-grid-bg overflow-y-auto flex items-center justify-center pt-20 pb-24 sm:pb-12 px-4 sm:px-8 lg:pr-[464px]">
+    <div className="w-full h-full atlas-grid-bg overflow-y-auto flex items-start sm:items-center justify-center pt-20 pb-44 md:pb-12 px-4 sm:px-8 lg:pr-[464px]">
       <div className="w-full max-w-[700px] bg-[#0F172A]/92 border border-white/10 rounded-2xl p-5 sm:p-7 shadow-2xl space-y-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-white/10 pb-3">
           <div>
