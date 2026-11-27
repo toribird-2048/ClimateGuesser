@@ -1,6 +1,7 @@
 import type { GeoJsonObject, Position } from 'geojson';
 import { feature } from 'topojson-client';
 import type { GeometryCollection, Objects, Topology } from 'topojson-specification';
+import { addDebugLog } from './debugLogger.ts';
 
 export interface WorldAtlasObjects extends Objects {
   countries: GeometryCollection;
@@ -21,15 +22,28 @@ let cachedLandPolygonsPromise: Promise<LandPolygon[]> | null = null;
 export function loadWorldAtlasTopology(): Promise<Topology<WorldAtlasObjects>> {
   if (!cachedTopologyPromise) {
     const baseUrl = import.meta.env?.BASE_URL ?? '/';
-    cachedTopologyPromise = fetch(`${baseUrl}world-50m.json`)
+    const url = `${baseUrl}world-50m.json`;
+    const t0 = performance.now();
+    cachedTopologyPromise = fetch(url)
       .then((res) => {
         if (!res.ok) {
+          addDebugLog('error', 'map', `world-50m.json 取得失敗 (HTTP ${res.status})`, {
+            detail: url,
+            durationMs: Math.round(performance.now() - t0),
+          });
           throw new Error(`地図データの読み込みに失敗しました (${res.status})`);
         }
+        addDebugLog('info', 'map', `world-50m.json 読み込み完了`, {
+          detail: url,
+          durationMs: Math.round(performance.now() - t0),
+        });
         return res.json() as Promise<Topology<WorldAtlasObjects>>;
       })
       .catch((err) => {
         cachedTopologyPromise = null;
+        addDebugLog('error', 'map', `world-50m.json 読み込み例外`, {
+          detail: err instanceof Error ? err.message : String(err),
+        });
         throw err;
       });
   }

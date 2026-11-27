@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Bug,
   Clock,
   Crosshair,
   Flame,
@@ -13,7 +14,11 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { KOPPEN_CLASSES } from './data/koppen.ts';
-import { discoverRandomRound, fetchReverseGeocode } from './services/roundDiscovery.ts';
+import {
+  discoverDebugRound,
+  discoverRandomRound,
+  fetchReverseGeocode,
+} from './services/roundDiscovery.ts';
 import type {
   BestRecords,
   GameMode,
@@ -30,6 +35,12 @@ import type {
   ViewMode,
 } from './types/game.ts';
 import {
+  addDebugLog,
+  attachGlobalErrorListeners,
+  loadDebugModePreference,
+  saveDebugModePreference,
+} from './utils/debugLogger.ts';
+import {
   playClickSound,
   playExactMatchSound,
   playGroupMatchSound,
@@ -40,6 +51,7 @@ import {
 } from './utils/sound.ts';
 import {
   clearGameSession,
+  clearRecentHistory,
   loadBestRecords,
   loadGamePreferences,
   loadGameSession,
@@ -50,6 +62,7 @@ import {
   saveGameSession,
 } from './utils/storage.ts';
 import { BlankMapViewport } from './components/BlankMapViewport.tsx';
+import { DebugPanel } from './components/DebugPanel.tsx';
 import { ExplorationViewport } from './components/ExplorationViewport.tsx';
 import { HintDrawer, STANDARD_HINT_PENALTIES } from './components/HintDrawer.tsx';
 import { HythergraphViewport } from './components/HythergraphViewport.tsx';
@@ -58,6 +71,7 @@ import { KoppenSelectorDock } from './components/KoppenSelectorDock.tsx';
 import { RevealModal } from './components/RevealModal.tsx';
 import { SummaryScreen } from './components/SummaryScreen.tsx';
 import { TitleScreen } from './components/TitleScreen.tsx';
+import { loadKoppenZonesGeoJson } from './utils/koppenMapLayer.ts';
 
 const STANDARD_ROUNDS = 5;
 
@@ -152,6 +166,25 @@ export default function App() {
 
   const [loadingError, setLoadingError] = useState<string | null>(null);
   const [isPrefetchingNext, setIsPrefetchingNext] = useState(false);
+  const [debugMode, setDebugMode] = useState<boolean>(() => loadDebugModePreference());
+  const [bufferSnapshot, setBufferSnapshot] = useState<RoundLocation[]>([]);
+  const [recentHistoryCount, setRecentHistoryCount] = useState<number>(
+    () => recentHistoryRef.current.length
+  );
+
+  const syncBufferSnapshot = useCallback(() => {
+    setBufferSnapshot([...prefetchBufferRef.current]);
+    setRecentHistoryCount(recentHistoryRef.current.length);
+  }, []);
+
+  useEffect(() => {
+    attachGlobalErrorListeners();
+    void loadKoppenZonesGeoJson().catch(() => null);
+  }, []);
+
+  useEffect(() => {
+    saveDebugModePreference(debugMode);
+  }, [debugMode]);
 
   const excludedCodes: KoppenCode[] = questionFormat === 'hythergraph' ? ['H'] : [];
 
@@ -162,7 +195,7 @@ export default function App() {
   const nextPlayerIndex = (currentRoundNumber % 2) as 0 | 1;
   const nextPlayerName = versusConfig.playerNames[nextPlayerIndex];
 
-  const PREFETCH_BUFFER_CAPACITY = 3;
+  const PREFETCH_BUFFER_CAPACITY = 4;
 
   const ensurePrefetchBuffer = useCallback(
     (activeFormat: QuestionFormat, targetDepth = PREFETCH_BUFFER_CAPACITY) => {
@@ -174,6 +207,7 @@ export default function App() {
         const ck = `${Math.round(item.lat)},${Math.round(item.lng)}`;
         return !excludeSet.has(item.climate.climateCode) && !usedCoordKeysRef.current.has(ck);
       });
+      syncBufferSnapshot();
 
       if (prefetchBufferRef.current.length >= targetDepth || prefetchWorkerActiveRef.current) {
         setIsPrefetchingNext(
@@ -192,12 +226,12 @@ export default function App() {
             gen === prefetchGenerationRef.current &&
             prefetchBufferRef.current.length < targetDepth
           ) {
-            // Project session state across already-buffered rounds so all buffered items are diverse
+            // Project session state across already-buffered rounds (using recent 5-round sliding window)
             const buffered = prefetchBufferRef.current;
             const projectedUsedCodes: KoppenCode[] = [
-              ...usedCodesRef.current,
+              ...usedCodesRef.current.slice(-5),
               ...buffered.map((b) => b.climate.climateCode),
-            ];
+            ].slice(-5);
             const projectedCoordKeys = new Set<string>(usedCoordKeysRef.current);
             for (const b of buffered) {
               projectedCoordKeys.add(`${Math.round(b.lat)},${Math.round(b.lng)}`);
@@ -240,6 +274,7 @@ export default function App() {
             );
             if (!usedCoordKeysRef.current.has(ck) && !alreadyBuffered) {
               prefetchBufferRef.current.push(loc);
+              syncBufferSnapshot();
               // Pre-warm reverse geocoding cache in the background so Reveal shows place name immediately
               void fetchReverseGeocode(loc.lat, loc.lng);
             }
@@ -250,14 +285,15 @@ export default function App() {
           if (gen === prefetchGenerationRef.current) {
             prefetchWorkerActiveRef.current = false;
             setIsPrefetchingNext(false);
+            syncBufferSnapshot();
           }
         }
       })();
     },
-    []
+    [syncBufferSnapshot]
   );
 
-  // Keep the 3-round prefetch buffer warm even on TITLE and SUMMARY screens
+  // Keep the 4-round prefetch buffer warm even on TITLE and SUMMARY screens
   useEffect(() => {
     if (phase === 'TITLE' || phase === 'SUMMARY') {
       ensurePrefetchBuffer(questionFormat, PREFETCH_BUFFER_CAPACITY);
@@ -267,7 +303,7 @@ export default function App() {
   const popNextBufferedLocation = useCallback(
     (excludeCodes: KoppenCode[]): RoundLocation | null => {
       const excludeSet = new Set(excludeCodes);
-      const usedCodeSet = new Set(usedCodesRef.current);
+      const usedCodeSet = new Set(usedCodesRef.current.slice(-5));
 
       // Filter out any invalid/colliding items first
       prefetchBufferRef.current = prefetchBufferRef.current.filter((item) => {
@@ -276,18 +312,20 @@ export default function App() {
       });
 
       if (prefetchBufferRef.current.length === 0) {
+        syncBufferSnapshot();
         return null;
       }
 
-      // Prefer a buffered location whose climate code has not yet been used in this game session
+      // Prefer a buffered location whose climate code was not used in the last 5 rounds
       const freshIdx = prefetchBufferRef.current.findIndex(
         (item) => !usedCodeSet.has(item.climate.climateCode)
       );
       const pickIdx = freshIdx >= 0 ? freshIdx : 0;
       const [picked] = prefetchBufferRef.current.splice(pickIdx, 1);
+      syncBufferSnapshot();
       return picked ?? null;
     },
-    []
+    [syncBufferSnapshot]
   );
 
   const loadRound = useCallback(
@@ -351,6 +389,7 @@ export default function App() {
           regionIndex: nextLoc.regionIndex ?? -1,
           playedAt: Date.now(),
         });
+        syncBufferSnapshot();
 
         // Ensure reverse geocode is warmed for the active round while the user plays
         void fetchReverseGeocode(nextLoc.lat, nextLoc.lng);
@@ -367,12 +406,66 @@ export default function App() {
           err instanceof Error
             ? err.message
             : '地点データの取得中にエラーが発生しました。';
+        addDebugLog('error', 'discovery', `ラウンド #${roundNum} 読み込み失敗: ${msg}`);
         setLoadingError(msg);
         setPhase('LOADING');
       }
     },
-    [ensurePrefetchBuffer, popNextBufferedLocation, versusTotalRounds]
+    [ensurePrefetchBuffer, popNextBufferedLocation, syncBufferSnapshot, versusTotalRounds]
   );
+
+  const applyDebugForcedLocation = useCallback(
+    (loc: RoundLocation) => {
+      setLoadingError(null);
+      setActiveReveal(null);
+      setSelectedGuess(null);
+      setUnlockedHintTier(0);
+      setIsHintOpen(false);
+      setViewMode('satellite');
+      setResetCounter(0);
+      setFocusPinCounter(0);
+      setCurrentLocation(loc);
+      setCurrentZoom(questionFormat === 'blankMap' ? 2 : 13);
+      setTimeLeftSec(timeLimitSec);
+      timeoutHandledRoundRef.current = null;
+      setPhase('PLAYING');
+      void fetchReverseGeocode(loc.lat, loc.lng);
+    },
+    [questionFormat, timeLimitSec]
+  );
+
+  const handleForceLoadCode = useCallback(
+    async (code: KoppenCode) => {
+      const loc = await discoverDebugRound({ targetCode: code });
+      applyDebugForcedLocation(loc);
+    },
+    [applyDebugForcedLocation]
+  );
+
+  const handleForceLoadCoords = useCallback(
+    async (lat: number, lng: number) => {
+      const loc = await discoverDebugRound({ lat, lng });
+      applyDebugForcedLocation(loc);
+    },
+    [applyDebugForcedLocation]
+  );
+
+  const handleRefillBuffer = useCallback(() => {
+    prefetchGenerationRef.current += 1;
+    prefetchWorkerActiveRef.current = false;
+    prefetchInFlightRef.current = null;
+    prefetchBufferRef.current = [];
+    syncBufferSnapshot();
+    addDebugLog('info', 'prefetch', '先読みバッファを手動でリセット・再取得開始');
+    ensurePrefetchBuffer(questionFormat, PREFETCH_BUFFER_CAPACITY);
+  }, [ensurePrefetchBuffer, questionFormat, syncBufferSnapshot]);
+
+  const handleClearRecentHistory = useCallback(() => {
+    clearRecentHistory();
+    recentHistoryRef.current = [];
+    syncBufferSnapshot();
+    addDebugLog('info', 'discovery', '直近45問の出題履歴をリセットしました');
+  }, [syncBufferSnapshot]);
 
   const handleStartMode = useCallback(
     (
@@ -789,9 +882,15 @@ export default function App() {
     timeLimitSec,
   ]);
 
-  // Keyboard shortcuts during PLAYING and REVEAL
+  // Keyboard shortcuts during PLAYING and REVEAL (+ global Ctrl+Shift+D for Debug Mode)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        e.preventDefault();
+        setDebugMode((d) => !d);
+        return;
+      }
+
       if (isReferenceOpen) {
         if (e.key === 'Escape') setIsReferenceOpen(false);
         return;
@@ -842,6 +941,28 @@ export default function App() {
     handleContinueAfterReveal,
   ]);
 
+  const debugPanelNode = debugMode ? (
+    <DebugPanel
+      phase={phase}
+      mode={mode}
+      questionFormat={questionFormat}
+      currentRoundNumber={currentRoundNumber}
+      currentLocation={currentLocation}
+      activeReveal={activeReveal}
+      selectedGuess={selectedGuess}
+      loadingError={loadingError}
+      usedCodes={usedCodesRef.current}
+      usedCoordKeys={Array.from(usedCoordKeysRef.current)}
+      bufferedLocations={bufferSnapshot}
+      recentHistoryCount={recentHistoryCount}
+      onForceLoadCode={handleForceLoadCode}
+      onForceLoadCoords={handleForceLoadCoords}
+      onRefillBuffer={handleRefillBuffer}
+      onClearRecentHistory={handleClearRecentHistory}
+      onDisableDebugMode={() => setDebugMode(false)}
+    />
+  ) : null;
+
   if (phase === 'TITLE') {
     return (
       <>
@@ -853,10 +974,13 @@ export default function App() {
           onPreferencesChange={handlePreferencesChange}
           onStartMode={handleStartMode}
           onOpenReference={() => setIsReferenceOpen(true)}
+          debugMode={debugMode}
+          onToggleDebugMode={() => setDebugMode((d) => !d)}
         />
         {isReferenceOpen && (
           <KoppenReferenceModal onClose={() => setIsReferenceOpen(false)} />
         )}
+        {debugPanelNode}
       </>
     );
   }
@@ -889,6 +1013,7 @@ export default function App() {
         {isReferenceOpen && (
           <KoppenReferenceModal onClose={() => setIsReferenceOpen(false)} />
         )}
+        {debugPanelNode}
       </>
     );
   }
@@ -938,7 +1063,7 @@ export default function App() {
                 <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
                   {loadingError}
                 </p>
-                <div className="flex items-center justify-center gap-3 pt-2">
+                <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
                   <button
                     type="button"
                     onClick={() => setPhase('TITLE')}
@@ -955,6 +1080,16 @@ export default function App() {
                   >
                     別の地点を再探索
                   </button>
+                  {!debugMode && (
+                    <button
+                      type="button"
+                      onClick={() => setDebugMode(true)}
+                      className="px-3.5 py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                    >
+                      <Bug className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>デバッグ情報を表示</span>
+                    </button>
+                  )}
                 </div>
               </>
             ) : (
@@ -1110,6 +1245,18 @@ export default function App() {
                 ) : (
                   <Volume2 className="w-4 h-4" aria-hidden="true" />
                 )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDebugMode((d) => !d)}
+                className={`transition-colors cursor-pointer shrink-0 ${
+                  debugMode ? 'text-amber-300 hover:text-amber-200' : 'text-slate-500 hover:text-slate-200'
+                }`}
+                aria-label={debugMode ? 'デバッグモードをオフにする' : 'デバッグモードをオンにする'}
+                title="デバッグモード切替 (Ctrl+Shift+D)"
+              >
+                <Bug className="w-4 h-4" aria-hidden="true" />
               </button>
 
               {/* Subtle bottom countdown progress bar when time limit is enabled */}
@@ -1312,6 +1459,8 @@ export default function App() {
           nextPlayerName={mode === 'versus' ? nextPlayerName : undefined}
         />
       )}
+
+      {debugPanelNode}
     </div>
   );
 }

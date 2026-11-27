@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowRight,
   BookOpen,
+  Bug,
   Compass,
   Flame,
   Globe2,
@@ -79,6 +80,8 @@ interface TitleScreenProps {
     }
   ) => void;
   onOpenReference: () => void;
+  debugMode?: boolean;
+  onToggleDebugMode?: () => void;
 }
 
 export function TitleScreen({
@@ -89,6 +92,8 @@ export function TitleScreen({
   onPreferencesChange,
   onStartMode,
   onOpenReference,
+  debugMode = false,
+  onToggleDebugMode,
 }: TitleScreenProps) {
   const [questionFormat, setQuestionFormat] = useState<QuestionFormat>(initialQuestionFormat);
   const [timeLimitSec, setTimeLimitSec] = useState<TimeLimitOption>(initialTimeLimit);
@@ -549,6 +554,21 @@ export function TitleScreen({
               <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
               <span>14区分の早見表を見る</span>
             </button>
+            {onToggleDebugMode && (
+              <button
+                type="button"
+                onClick={onToggleDebugMode}
+                className={`inline-flex items-center gap-1.5 font-medium cursor-pointer whitespace-nowrap transition-colors ${
+                  debugMode
+                    ? 'text-amber-300 hover:text-amber-200'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+                aria-pressed={debugMode}
+              >
+                <Bug className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{debugMode ? 'デバッグモード: ON' : 'デバッグモード'}</span>
+              </button>
+            )}
           </div>
         </section>
       </main>

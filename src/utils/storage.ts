@@ -369,3 +369,11 @@ export function recordRecentRound(entry: RecentRoundEntry): RecentRoundEntry[] {
   }
   return next;
 }
+
+export function clearRecentHistory(): void {
+  try {
+    window.localStorage.removeItem(RECENT_HISTORY_KEY);
+  } catch {
+    // Ignore storage errors
+  }
+}

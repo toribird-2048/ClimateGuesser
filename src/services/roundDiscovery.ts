@@ -11,6 +11,8 @@ import {
   sampleLandPointInBox,
   sampleRandomGlobalLandCoordinate,
 } from '../utils/landMask.ts';
+import { getKoppenZoneAtPoint } from '../utils/koppenMapLayer.ts';
+import { addDebugLog } from '../utils/debugLogger.ts';
 
 const MONTH_KEYS = [
   'JAN',
@@ -62,10 +64,15 @@ interface ChosenRegion {
   regionIndex: number;
 }
 
+// Track when NASA POWER is slow or rate-limiting during continuous play so we hedge with Open-Meteo immediately
+let nasaDegradedUntil = 0;
+const NASA_HEDGE_DELAY_MS = 1200;
+const SESSION_CODE_WINDOW = 5;
+
 /**
  * Selects a sampling region biased toward:
- * 1) climate classes & groups unseen in the current session,
- * 2) climate classes not played in the last ~12 rounds across sessions (prevents H/EF dominance),
+ * 1) climate classes & groups unseen in the recent session window (last 5 rounds),
+ * 2) climate classes not played in the last ~10 rounds across sessions (prevents H/EF dominance),
  * 3) region boxes not recently visited across sessions (prevents hitting the same spot repeatedly).
  */
 function chooseSamplingRegion(
@@ -76,8 +83,10 @@ function chooseSamplingRegion(
 ): ChosenRegion {
   const excludeSet = new Set(excludeCodes);
   const allowedCodes = ALL_KOPPEN_CODES.filter((code) => !excludeSet.has(code));
-  const usedCodeSet = new Set(usedCodes);
-  const usedGroupSet = new Set(usedCodes.map((c) => KOPPEN_CLASSES[c].group));
+  // Use a sliding window of the most recent SESSION_CODE_WINDOW codes so continuous play never exhausts all 13-14 classes
+  const activeUsedCodes = usedCodes.slice(-SESSION_CODE_WINDOW);
+  const usedCodeSet = new Set(activeUsedCodes);
+  const usedGroupSet = new Set(activeUsedCodes.map((c) => KOPPEN_CLASSES[c].group));
 
   const freshGroupCodes = allowedCodes.filter(
     (code) => !usedCodeSet.has(code) && !usedGroupSet.has(KOPPEN_CLASSES[code].group)
@@ -91,8 +100,8 @@ function chooseSamplingRegion(
         ? unusedCodes
         : allowedCodes;
 
-  // Cross-game anti-repeat: prefer codes not seen in the last 12 rounds
-  const recentWindow = recentHistory.slice(-12);
+  // Cross-game anti-repeat: prefer codes not seen in the last 8 rounds
+  const recentWindow = recentHistory.slice(-8);
   const recentCodeSet = new Set(recentWindow.map((r) => r.code));
   const notRecentlyPlayedCodes = baseCandidates.filter((code) => !recentCodeSet.has(code));
 
@@ -120,7 +129,7 @@ function chooseSamplingRegion(
   const untriedRegions = indexedRegions.filter((item) => !triedRegionIndices.has(item.regionIndex));
   const regionCandidates = untriedRegions.length > 0 ? untriedRegions : indexedRegions;
 
-  const recentRegionWindow = recentHistory.slice(-30);
+  const recentRegionWindow = recentHistory.slice(-24);
   const recentRegionSet = new Set(recentRegionWindow.map((r) => r.regionIndex));
   const freshRegions = regionCandidates.filter((item) => !recentRegionSet.has(item.regionIndex));
 
@@ -128,7 +137,7 @@ function chooseSamplingRegion(
     return pickRandom(freshRegions);
   }
 
-  // If all boxes for this code were visited in the last 30 rounds, pick from the oldest half
+  // If all boxes for this code were visited recently, pick from the oldest half
   const lastIndexOfRegion = new Map<number, number>();
   recentHistory.forEach((entry, idx) => lastIndexOfRegion.set(entry.regionIndex, idx));
   const sortedRegions = [...regionCandidates].sort(
@@ -141,7 +150,11 @@ function chooseSamplingRegion(
 /**
  * Direct client-side NASA POWER 25-year Climatology API lookup (CORS-enabled, keyless).
  */
-async function fetchClimateFromNasaPower(lat: number, lng: number): Promise<ClimateData | null> {
+async function fetchClimateFromNasaPower(
+  lat: number,
+  lng: number,
+  externalSignal?: AbortSignal
+): Promise<ClimateData | null> {
   const url = new URL('https://power.larc.nasa.gov/api/temporal/climatology/point');
   url.searchParams.set('parameters', 'T2M,PRECTOTCORR');
   url.searchParams.set('community', 'AG');
@@ -150,11 +163,26 @@ async function fetchClimateFromNasaPower(lat: number, lng: number): Promise<Clim
   url.searchParams.set('format', 'JSON');
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 4500);
+  const timeout = setTimeout(() => controller.abort(), 3200);
+  const onExternalAbort = () => controller.abort();
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+  const t0 = performance.now();
 
   try {
     const response = await fetch(url.toString(), { signal: controller.signal });
-    if (!response.ok) return null;
+    const elapsed = Math.round(performance.now() - t0);
+    if (!response.ok) {
+      if (response.status === 429 || response.status >= 500) {
+        nasaDegradedUntil = Date.now() + 45_000;
+      }
+      addDebugLog(
+        'warn',
+        'climate-api',
+        `NASA POWER HTTP ${response.status} @ (${lat.toFixed(2)}, ${lng.toFixed(2)})`,
+        { durationMs: elapsed }
+      );
+      return null;
+    }
 
     const payload = (await response.json()) as {
       geometry?: { coordinates?: number[] };
@@ -185,6 +213,12 @@ async function fetchClimateFromNasaPower(lat: number, lng: number): Promise<Clim
         tVal <= -900 ||
         pVal <= -900
       ) {
+        addDebugLog(
+          'warn',
+          'climate-api',
+          `NASA POWER 欠損値 (-999) @ (${lat.toFixed(2)}, ${lng.toFixed(2)})`,
+          { durationMs: Math.round(performance.now() - t0) }
+        );
         return null;
       }
       monthlyTempC.push(tVal);
@@ -195,18 +229,47 @@ async function fetchClimateFromNasaPower(lat: number, lng: number): Promise<Clim
     const elevation =
       typeof rawElev === 'number' && Number.isFinite(rawElev) && rawElev > -500 ? rawElev : 0;
 
-    return classifyKoppen12(monthlyTempC, monthlyPrecipMm, lat, elevation);
-  } catch {
+    const totalElapsed = Math.round(performance.now() - t0);
+    if (totalElapsed > 2200) {
+      nasaDegradedUntil = Date.now() + 30_000;
+    }
+
+    const classified = classifyKoppen12(monthlyTempC, monthlyPrecipMm, lat, elevation);
+    addDebugLog(
+      'info',
+      'climate-api',
+      `NASA POWER OK @ (${lat.toFixed(2)}, ${lng.toFixed(2)}) -> ${classified.climateCode ?? classified.rawCode} (${Math.round(elevation)}m)`,
+      { durationMs: totalElapsed }
+    );
+    return classified;
+  } catch (err) {
+    if (!externalSignal?.aborted) {
+      nasaDegradedUntil = Date.now() + 45_000;
+      addDebugLog(
+        'warn',
+        'climate-api',
+        `NASA POWER 遅延/タイムアウト @ (${lat.toFixed(2)}, ${lng.toFixed(2)}) -> Open-Meteo併用モードへ切替`,
+        {
+          detail: err instanceof Error ? err.message : String(err),
+          durationMs: Math.round(performance.now() - t0),
+        }
+      );
+    }
     return null;
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 }
 
 /**
  * Direct client-side Open-Meteo Archive API fallback (CORS-enabled, keyless, 5-year daily normals).
  */
-async function fetchClimateFromOpenMeteo(lat: number, lng: number): Promise<ClimateData | null> {
+async function fetchClimateFromOpenMeteo(
+  lat: number,
+  lng: number,
+  externalSignal?: AbortSignal
+): Promise<ClimateData | null> {
   const url = new URL('https://archive-api.open-meteo.com/v1/archive');
   url.searchParams.set('latitude', lat.toFixed(4));
   url.searchParams.set('longitude', lng.toFixed(4));
@@ -216,11 +279,22 @@ async function fetchClimateFromOpenMeteo(lat: number, lng: number): Promise<Clim
   url.searchParams.set('timezone', 'UTC');
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5500);
+  const timeout = setTimeout(() => controller.abort(), 3800);
+  const onExternalAbort = () => controller.abort();
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+  const t0 = performance.now();
 
   try {
     const response = await fetch(url.toString(), { signal: controller.signal });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      addDebugLog(
+        'error',
+        'climate-api',
+        `Open-Meteo HTTP ${response.status} @ (${lat.toFixed(2)}, ${lng.toFixed(2)})`,
+        { durationMs: Math.round(performance.now() - t0) }
+      );
+      return null;
+    }
 
     const payload = (await response.json()) as {
       elevation?: number;
@@ -270,28 +344,121 @@ async function fetchClimateFromOpenMeteo(lat: number, lng: number): Promise<Clim
     });
 
     const elevation = typeof payload.elevation === 'number' ? payload.elevation : 0;
-    return classifyKoppen12(monthlyTempC, monthlyPrecipMm, lat, elevation);
-  } catch {
+    const classified = classifyKoppen12(monthlyTempC, monthlyPrecipMm, lat, elevation);
+    addDebugLog(
+      'info',
+      'climate-api',
+      `Open-Meteo OK @ (${lat.toFixed(2)}, ${lng.toFixed(2)}) -> ${classified.climateCode ?? classified.rawCode}`,
+      { durationMs: Math.round(performance.now() - t0) }
+    );
+    return classified;
+  } catch (err) {
+    if (!externalSignal?.aborted) {
+      addDebugLog(
+        'error',
+        'climate-api',
+        `Open-Meteo 失敗 @ (${lat.toFixed(2)}, ${lng.toFixed(2)})`,
+        {
+          detail: err instanceof Error ? err.message : String(err),
+          durationMs: Math.round(performance.now() - t0),
+        }
+      );
+    }
     return null;
   } finally {
     clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 }
 
-async function fetchClimateForCoords(lat: number, lng: number): Promise<ClimateData | null> {
+/**
+ * Fetches climate data for (lat, lng) using a hedged request strategy:
+ * - Starts NASA POWER immediately.
+ * - If NASA POWER hasn't responded within 1.2s (or immediately if NASA POWER stalled recently),
+ *   launches Open-Meteo in parallel and resolves as soon as EITHER returns valid ClimateData,
+ *   aborting the slower in-flight request.
+ */
+async function fetchClimateForCoords(
+  lat: number,
+  lng: number,
+  waveSignal?: AbortSignal
+): Promise<ClimateData | null> {
   const key = getGridKey(lat, lng);
   const existing = climateCache.get(key);
   if (existing && Date.now() - existing.cachedAt < CACHE_TTL_MS) {
     return existing.data;
   }
 
-  const climate =
-    (await fetchClimateFromNasaPower(lat, lng)) ?? (await fetchClimateFromOpenMeteo(lat, lng));
+  const nasaController = new AbortController();
+  const meteoController = new AbortController();
+  const abortBoth = () => {
+    nasaController.abort();
+    meteoController.abort();
+  };
+  waveSignal?.addEventListener('abort', abortBoth, { once: true });
 
-  if (climate) {
-    setBoundedCache(climateCache, key, climate);
+  const isNasaDegraded = Date.now() < nasaDegradedUntil;
+  const hedgeDelay = isNasaDegraded ? 0 : NASA_HEDGE_DELAY_MS;
+
+  try {
+    const climate = await new Promise<ClimateData | null>((resolve) => {
+      let settled = false;
+      let pendingCount = 1; // NASA starts immediately
+      let meteoStarted = false;
+      let hedgeTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = (result: ClimateData | null) => {
+        if (settled) return;
+        settled = true;
+        if (hedgeTimer) clearTimeout(hedgeTimer);
+        nasaController.abort();
+        meteoController.abort();
+        resolve(result);
+      };
+
+      const startMeteo = () => {
+        if (meteoStarted || settled || waveSignal?.aborted) return;
+        meteoStarted = true;
+        pendingCount += 1;
+        void fetchClimateFromOpenMeteo(lat, lng, meteoController.signal).then((res) => {
+          if (res) {
+            finish(res);
+          } else {
+            pendingCount -= 1;
+            if (pendingCount <= 0) finish(null);
+          }
+        });
+      };
+
+      if (hedgeDelay === 0) {
+        startMeteo();
+      } else {
+        hedgeTimer = setTimeout(startMeteo, hedgeDelay);
+      }
+
+      void fetchClimateFromNasaPower(lat, lng, nasaController.signal).then((res) => {
+        if (res) {
+          finish(res);
+        } else {
+          pendingCount -= 1;
+          // NASA failed early (< 1.2s): trigger Open-Meteo right away instead of waiting for timer
+          if (!meteoStarted) {
+            if (hedgeTimer) clearTimeout(hedgeTimer);
+            startMeteo();
+          } else if (pendingCount <= 0) {
+            finish(null);
+          }
+        }
+      });
+    });
+
+    if (climate) {
+      setBoundedCache(climateCache, key, climate);
+    }
+    return climate;
+  } finally {
+    waveSignal?.removeEventListener('abort', abortBoth);
   }
-  return climate;
 }
 
 async function fetchNominatimDirect(lat: number, lng: number): Promise<ReverseGeocodeResult | null> {
@@ -484,7 +651,7 @@ async function generateCandidatePoint(
   triedRegionIndices: Set<number>,
   allowUnconstrainedGlobal: boolean
 ): Promise<CandidatePoint | null> {
-  const tryUnconstrainedGlobal = allowUnconstrainedGlobal && Math.random() < 0.3;
+  const tryUnconstrainedGlobal = allowUnconstrainedGlobal && Math.random() < 0.28;
 
   if (tryUnconstrainedGlobal) {
     for (let t = 0; t < 4; t++) {
@@ -514,7 +681,7 @@ async function generateCandidatePoint(
   let lat: number | null = null;
   let lng: number | null = null;
 
-  for (let jitter = 0; jitter < 4; jitter++) {
+  for (let jitter = 0; jitter < 10; jitter++) {
     const pt = await sampleLandPointInBox(
       region.minLat,
       region.maxLat,
@@ -525,7 +692,11 @@ async function generateCandidatePoint(
     lat = pt.lat;
     lng = pt.lng;
     const ck = `${Math.round(lat)},${Math.round(lng)}`;
-    if (!usedCoordKeys.has(ck) && !isNearRecentLocation(lat, lng, recentHistory)) {
+    if (usedCoordKeys.has(ck) || isNearRecentLocation(lat, lng, recentHistory)) {
+      continue;
+    }
+    const mapZone = await getKoppenZoneAtPoint(lat, lng);
+    if (!mapZone || mapZone === region.targetCode) {
       break;
     }
   }
@@ -547,7 +718,8 @@ async function generateCandidatePoint(
  * Randomly samples a land coordinate across Earth and verifies its exact
  * 14-class Köppen classification directly in the browser from real multi-decade climate normals.
  *
- * Uses parallel 2-candidate waves so network lookups resolve quickly without sequential retry stalls.
+ * Uses parallel candidate waves with first-acceptable early resolution + hedged NASA/Open-Meteo
+ * requests so a single slow API call or exhausted code pool never stalls continuous play.
  */
 export async function discoverRandomRound(
   usedCodes: KoppenCode[],
@@ -558,24 +730,28 @@ export async function discoverRandomRound(
     recentHistory?: RecentRoundEntry[];
   } = {}
 ): Promise<RoundLocation> {
-  const maxAttempts = options.maxAttempts ?? 18;
+  const maxAttempts = options.maxAttempts ?? 15;
   const excludeCodes = options.excludeCodes ?? [];
   const recentHistory = options.recentHistory ?? [];
   const excludeSet = new Set(excludeCodes);
-  const usedCodeSet = new Set(usedCodes);
-  const recentCodeWindow = new Set(recentHistory.slice(-10).map((r) => r.code));
+  // Bound session code exclusion to the last SESSION_CODE_WINDOW rounds so continuous Endless/Versus play never starves
+  const activeUsedCodes = usedCodes.slice(-SESSION_CODE_WINDOW);
+  const usedCodeSet = new Set(activeUsedCodes);
+  const recentCodeWindow = new Set(recentHistory.slice(-6).map((r) => r.code));
   const triedRegionIndices = new Set<number>();
 
-  const concurrency = 2;
+  const concurrency = 3;
   const totalWaves = Math.ceil(maxAttempts / concurrency);
-  let fallbackMatch: RoundLocation | null = null;
+  let alignedUnusedFallback: RoundLocation | null = null;
+  let unusedFallbackMatch: RoundLocation | null = null;
+  let anyFallbackMatch: RoundLocation | null = null;
 
   for (let wave = 0; wave < totalWaves; wave++) {
     const candidates: CandidatePoint[] = [];
     for (let c = 0; c < concurrency; c++) {
       const attemptIdx = wave * concurrency + c;
       const cand = await generateCandidatePoint(
-        usedCodes,
+        activeUsedCodes,
         usedCoordKeys,
         excludeCodes,
         recentHistory,
@@ -587,61 +763,160 @@ export async function discoverRandomRound(
 
     if (candidates.length === 0) continue;
 
-    const evaluated = await Promise.all(
-      candidates.map(async (cand, idx) => {
-        try {
-          const climate = await fetchClimateForCoords(cand.lat, cand.lng);
-          if (!climate || !climate.climateCode || excludeSet.has(climate.climateCode)) {
-            return null;
-          }
-          return { cand, climate, attemptIdx: wave * concurrency + idx };
-        } catch {
-          return null;
-        }
-      })
-    );
+    const waveAbort = new AbortController();
 
-    for (const item of evaluated) {
-      if (!item) continue;
-      const { cand, climate, attemptIdx } = item;
-      const actualCode = climate.climateCode!;
+    // Resolve as soon as the FIRST acceptable candidate in this wave finishes
+    // instead of blocking on the slowest candidate via Promise.all
+    const acceptedInWave = await new Promise<RoundLocation | null>((resolveWave) => {
+      let settled = false;
+      let remaining = candidates.length;
 
-      const loc: RoundLocation = {
-        id: `${cand.lat.toFixed(4)}_${cand.lng.toFixed(4)}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        lat: cand.lat,
-        lng: cand.lng,
-        regionIndex: cand.chosenRegionIndex,
-        climate: climate as ClimateData & { climateCode: KoppenCode },
-      };
+      candidates.forEach((cand) => {
+        void Promise.all([
+          fetchClimateForCoords(cand.lat, cand.lng, waveAbort.signal),
+          getKoppenZoneAtPoint(cand.lat, cand.lng),
+        ])
+          .then(([climate, mapZoneCode]) => {
+            if (settled) return;
+            if (climate && climate.climateCode && !excludeSet.has(climate.climateCode)) {
+              const actualCode = climate.climateCode;
+              const matchesMapZone = !mapZoneCode || mapZoneCode === actualCode;
 
-      // Keep a valid fallback in case strict diversity filters reject early waves
-      if (!fallbackMatch && !usedCodeSet.has(actualCode)) {
-        fallbackMatch = loc;
-      }
+              const loc: RoundLocation = {
+                id: `${cand.lat.toFixed(4)}_${cand.lng.toFixed(4)}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                lat: cand.lat,
+                lng: cand.lng,
+                regionIndex: cand.chosenRegionIndex,
+                climate: climate as ClimateData & { climateCode: KoppenCode },
+              };
 
-      if (attemptIdx < maxAttempts - 2 && usedCodeSet.has(actualCode)) {
-        continue;
-      }
+              if (!anyFallbackMatch) {
+                anyFallbackMatch = loc;
+              }
+              if (!unusedFallbackMatch && !usedCodeSet.has(actualCode)) {
+                unusedFallbackMatch = loc;
+              }
+              if (!alignedUnusedFallback && !usedCodeSet.has(actualCode) && matchesMapZone) {
+                alignedUnusedFallback = loc;
+              }
 
-      if (attemptIdx < 10) {
-        if (cand.isUnconstrainedGlobal) {
-          if (recentCodeWindow.has(actualCode)) continue;
-        } else if (cand.chosenTargetCode && actualCode !== cand.chosenTargetCode) {
-          if (recentCodeWindow.has(actualCode)) continue;
-        }
-      }
+              const isUsedInWindow = usedCodeSet.has(actualCode);
+              const isRecentMismatch =
+                wave === 0 &&
+                recentCodeWindow.has(actualCode) &&
+                (cand.isUnconstrainedGlobal ||
+                  (cand.chosenTargetCode !== null && actualCode !== cand.chosenTargetCode));
 
-      return loc;
+              if (!isUsedInWindow && !isRecentMismatch && matchesMapZone) {
+                settled = true;
+                waveAbort.abort();
+                resolveWave(loc);
+                return;
+              }
+            }
+
+            remaining -= 1;
+            if (remaining <= 0 && !settled) {
+              settled = true;
+              resolveWave(null);
+            }
+          })
+          .catch(() => {
+            remaining -= 1;
+            if (remaining <= 0 && !settled) {
+              settled = true;
+              resolveWave(null);
+            }
+          });
+      });
+    });
+
+    if (acceptedInWave) {
+      return acceptedInWave;
     }
 
-    if (wave >= 3 && fallbackMatch) {
-      return fallbackMatch;
+    if (alignedUnusedFallback) {
+      return alignedUnusedFallback;
+    }
+
+    // After wave 1 (6 parallel candidates), return unusedFallbackMatch or anyFallbackMatch so we never stall
+    if (wave >= 1) {
+      if (unusedFallbackMatch) return unusedFallbackMatch;
+      if (anyFallbackMatch) return anyFallbackMatch;
     }
   }
 
-  if (fallbackMatch) {
-    return fallbackMatch;
-  }
+  if (alignedUnusedFallback) return alignedUnusedFallback;
+  if (unusedFallbackMatch) return unusedFallbackMatch;
+  if (anyFallbackMatch) return anyFallbackMatch;
 
+  addDebugLog('error', 'discovery', `最大試行回数 (${maxAttempts}) 内に地点を確定できませんでした`);
   throw new Error('気候データの取得に失敗しました。再試行してください。');
+}
+
+/**
+ * Debug helper: loads a specific coordinate or forces a specific target Köppen class
+ * so the user can test any location or biome directly from Debug Mode.
+ */
+export async function discoverDebugRound(options: {
+  lat?: number;
+  lng?: number;
+  targetCode?: KoppenCode;
+}): Promise<RoundLocation> {
+  if (typeof options.lat === 'number' && typeof options.lng === 'number') {
+    const lat = Number(options.lat.toFixed(4));
+    const lng = Number(options.lng.toFixed(4));
+    const climate = await fetchClimateForCoords(lat, lng);
+    if (!climate || !climate.climateCode) {
+      addDebugLog('error', 'discovery', `指定座標 (${lat}, ${lng}) の気候データ取得に失敗`);
+      throw new Error(`指定座標 (${lat}, ${lng}) の気候データを取得できませんでした。`);
+    }
+    addDebugLog(
+      'info',
+      'discovery',
+      `デバッグ座標指定ロード: (${lat}, ${lng}) -> ${climate.climateCode}`
+    );
+    return {
+      id: `debug_${lat.toFixed(4)}_${lng.toFixed(4)}_${Date.now()}`,
+      lat,
+      lng,
+      regionIndex: -1,
+      climate: climate as ClimateData & { climateCode: KoppenCode },
+    };
+  }
+
+  const targetCode = options.targetCode ?? 'Cfa';
+  const candidateRegions = SAMPLING_REGIONS.map((region, regionIndex) => ({
+    region,
+    regionIndex,
+  })).filter((item) => item.region.targetCode === targetCode);
+
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const picked = pickRandom(candidateRegions);
+    const pt = await sampleLandPointInBox(
+      picked.region.minLat,
+      picked.region.maxLat,
+      picked.region.minLng,
+      picked.region.maxLng
+    );
+    if (!pt) continue;
+    const climate = await fetchClimateForCoords(pt.lat, pt.lng);
+    if (!climate || !climate.climateCode) continue;
+    if (attempt < 9 && climate.climateCode !== targetCode) continue;
+
+    addDebugLog(
+      'info',
+      'discovery',
+      `デバッグ気候指定ロード (${targetCode}): (${pt.lat}, ${pt.lng}) [region #${picked.regionIndex}] -> ${climate.climateCode}`
+    );
+    return {
+      id: `debug_${pt.lat.toFixed(4)}_${pt.lng.toFixed(4)}_${Date.now()}`,
+      lat: pt.lat,
+      lng: pt.lng,
+      regionIndex: picked.regionIndex,
+      climate: climate as ClimateData & { climateCode: KoppenCode },
+    };
+  }
+
+  throw new Error(`${targetCode} のテスト地点取得に失敗しました。もう一度お試しください。`);
 }
